@@ -25,7 +25,7 @@ from pyfanvil import FanvilClient, plan_static_network
 config = plan_static_network(
     "192.168.110.252",
     "192.168.110.0/24",
-    "10.40.13.0/24",
+    "10.0.0.0/24",
 )
 client = FanvilClient("192.168.110.252", username="admin", password="...")
 print(client.build_static_network_xml(config))     # dry-run

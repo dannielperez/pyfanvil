@@ -59,18 +59,33 @@ class BusyError(RuntimeError):
 
 @dataclass
 class SipAccount:
-    """Snapshot of one SIP line read from ``/lines.htm``."""
+    """Snapshot of one SIP line read from ``/lines.htm``.
 
-    ext: str | None
+    NOTE: Fanvil splits the identity into TWO fields that are easy to confuse —
+    ``number`` (``SIP_PhoneNum_R``, the account user placed in From/To/Contact and
+    what the PBX AOR matches on) and ``auth_user`` (``SIP_RegUser_R``, the
+    authentication/Register name). To re-home a panel to a different extension you
+    must change **both** (plus the password); changing only ``auth_user`` leaves it
+    registering under the old number and failing authentication.
+    """
+
+    number: str | None      # SIP_PhoneNum_R — the account user (From/To/Contact/AOR)
+    auth_user: str | None    # SIP_RegUser_R — the authentication / Register name
     primary: str | None
     primary_port: str | None
     backup: str | None
     backup_port: str | None
     failback: bool | None
 
+    @property
+    def ext(self) -> str | None:
+        """The extension the panel registers as (its SIP number)."""
+        return self.number
+
     def to_dict(self) -> dict[str, object]:
         return {
-            "ext": self.ext,
+            "number": self.number,
+            "auth_user": self.auth_user,
             "primary": self.primary,
             "primary_port": self.primary_port,
             "backup": self.backup,
@@ -244,7 +259,8 @@ class FanvilWebConfig:
     def read_sip(self) -> SipAccount:
         html = self._request("/lines.htm")
         return SipAccount(
-            ext=_field(html, "SIP_RegUser_R"),
+            number=_field(html, "SIP_PhoneNum_R"),
+            auth_user=_field(html, "SIP_RegUser_R"),
             primary=_field(html, "SIP_RegAddr_R"),
             primary_port=_field(html, "SIP_RegPort_R"),
             backup=_field(html, "SIP_BackupAddr_R"),
@@ -283,6 +299,26 @@ class FanvilWebConfig:
             if backup:
                 changes["SIP_BackupPort_R"] = backup_port
         return self.set_fields(changes)
+
+    def set_account(
+        self, number: str, *, auth_user: str | None = None, password: str | None = None
+    ) -> SipAccount:
+        """Re-home the line to a different extension. Sets the SIP ``number``
+        (From/To/Contact) **and** the auth user together — set both or the panel
+        keeps registering under the old number and fails auth. ``auth_user`` defaults
+        to ``number``. Pass ``password`` to set a new secret; omit to keep the current
+        one. **Reboot required** afterwards (call :meth:`reboot`) — the SIP identity
+        does not switch live.
+        """
+        changes = {"SIP_PhoneNum_R": number, "SIP_RegUser_R": auth_user or number}
+        if password is not None:
+            changes["SIP_RegPasswd_R"] = password
+        return self.set_fields(changes)
+
+    def reboot(self) -> None:
+        """Reboot the device (needed to apply a SIP identity change)."""
+        self._s.post(self._url("/reboot.htm"), data={"DefaultReboot": "Reboot"},
+                     timeout=self.timeout)
 
 
 def build_replay_body(

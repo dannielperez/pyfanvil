@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ ENCODE_PREFIX = "$EP^%39]"
 FANVIL_OUIS = ("0c:38:3e", "00:a8:59")
 
 _SIP_ANCHOR = "SIP_RegAddr_R"  # a field unique to the SIP account form (``sipForm``)
+_SIP_TRANSPORTS = {"udp": "0", "tcp": "1"}
 
 
 class LoginError(RuntimeError):
@@ -174,14 +176,20 @@ class FanvilWebConfig:
         *,
         scheme: str = "http",
         timeout: float = 10.0,
-        max_503_retries: int = 6,
-        retry_backoff: float = 10.0,
+        max_503_retries: int = 2,
+        retry_backoff: float = 5.0,
     ) -> None:
         self.host = host
         self.username = username
         self.password = password
         self.scheme = scheme
-        self.timeout = timeout
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a positive finite number")
+        if not 0 <= max_503_retries <= 2:
+            raise ValueError("max_503_retries must be between 0 and 2")
+        if not math.isfinite(retry_backoff) or not 0 <= retry_backoff <= 5:
+            raise ValueError("retry_backoff must be finite and between 0 and 5 seconds")
+        self.timeout = min(timeout, 30.0)
         self.max_503_retries = max_503_retries
         self.retry_backoff = retry_backoff
         self._s = requests.Session()
@@ -203,8 +211,11 @@ class FanvilWebConfig:
     def _request(self, path: str, data: dict | None = None) -> str:
         last: Exception | None = None
         for attempt in range(self.max_503_retries + 1):
-            r = self._s.post(self._url(path), data=data, timeout=self.timeout) if data else \
-                self._s.get(self._url(path), timeout=self.timeout)
+            r = (
+                self._s.post(self._url(path), data=data, timeout=self.timeout)
+                if data
+                else self._s.get(self._url(path), timeout=self.timeout)
+            )
             if r.status_code == 503:
                 last = BusyError(f"{self.host}: 503 Server Too Busy")
                 time.sleep(self.retry_backoff * (attempt + 1))
@@ -237,8 +248,9 @@ class FanvilWebConfig:
         html = self._request("/information.htm")
         macs = re.findall(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", html)
         model = re.search(r"(?i)\b(i[0-9]{2}[A-Za-z]?|[A-Z][0-9]{2,3}[A-Za-z]?)\b", html)
-        return DeviceInfo(mac=(macs[0].lower() if macs else None),
-                          model=(model.group(1) if model else None))
+        return DeviceInfo(
+            mac=(macs[0].lower() if macs else None), model=(model.group(1) if model else None)
+        )
 
     # -- SIP account -------------------------------------------------------
     def read_sip(self) -> SipAccount:
@@ -283,6 +295,36 @@ class FanvilWebConfig:
             if backup:
                 changes["SIP_BackupPort_R"] = backup_port
         return self.set_fields(changes)
+
+    def set_sip_account(
+        self,
+        *,
+        server: str,
+        port: str = "5060",
+        username: str,
+        password: str,
+        transport: str = "udp",
+    ) -> SipAccount:
+        """Apply one SIP account using vendor-neutral values.
+
+        Fanvil form field names and transport encodings stay inside this wrapper;
+        callers never need to know the legacy firmware's wire representation.
+        """
+        normalized_transport = transport.lower()
+        try:
+            transport_value = _SIP_TRANSPORTS[normalized_transport]
+        except KeyError as exc:
+            raise ValueError(f"unsupported SIP transport: {transport}") from exc
+
+        return self.set_fields(
+            {
+                "SIP_RegAddr_R": server,
+                "SIP_RegPort_R": port,
+                "SIP_RegUser_R": username,
+                "SIP_RegPasswd_R": password,
+                "SIP_Transport_RW": transport_value,
+            }
+        )
 
 
 def build_replay_body(

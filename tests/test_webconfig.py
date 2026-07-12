@@ -1,8 +1,11 @@
 """Offline tests for the legacy Fanvil web-config driver (no device needed)."""
 
 import base64
+from unittest.mock import Mock
 
-from pyfanvil import DeviceInfo, is_fanvil_mac
+import pytest
+
+from pyfanvil import DeviceInfo, FanvilWebConfig, is_fanvil_mac
 from pyfanvil.webconfig import (
     ENCODE_PREFIX,
     _checked,
@@ -55,9 +58,9 @@ def test_form_parser_collects_only_submittable_fields():
     parser.feed(SAMPLE_FORM)
     by_name = {n: v for n, v, _ in parser.fields}
     assert by_name["SIP_RegUser_R"] == "3102"
-    assert "SIP_EnableFailback_RW" in by_name          # checked checkbox kept
-    assert "SIP_Disabled_RW" not in by_name            # unchecked dropped (browser parity)
-    assert by_name["SIP_Transport_RW"] == "1"          # selected <option> value
+    assert "SIP_EnableFailback_RW" in by_name  # checked checkbox kept
+    assert "SIP_Disabled_RW" not in by_name  # unchecked dropped (browser parity)
+    assert by_name["SIP_Transport_RW"] == "1"  # selected <option> value
 
 
 def test_build_replay_body_changes_only_target_and_encodes_password():
@@ -78,3 +81,43 @@ def test_build_replay_body_appends_apply_when_missing():
     fields = [("SIP_RegAddr_R", "1.2.3.4", "text")]
     body = build_replay_body(fields, {})
     assert ("DefaultSubmit", "Apply") in body
+
+
+def test_set_sip_account_maps_neutral_values_to_firmware_fields():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client.set_fields = Mock()
+
+    client.set_sip_account(
+        server="pbx.example",
+        username="1001",
+        password="sip-secret",
+        transport="TCP",
+    )
+
+    client.set_fields.assert_called_once_with(
+        {
+            "SIP_RegAddr_R": "pbx.example",
+            "SIP_RegPort_R": "5060",
+            "SIP_RegUser_R": "1001",
+            "SIP_RegPasswd_R": "sip-secret",
+            "SIP_Transport_RW": "1",
+        }
+    )
+
+
+def test_set_sip_account_rejects_unsupported_transport():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+
+    with pytest.raises(ValueError, match="unsupported SIP transport"):
+        client.set_sip_account(
+            server="pbx.example",
+            username="1001",
+            password="sip-secret",
+            transport="tls",
+        )
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_client_rejects_unbounded_timeout(timeout):
+    with pytest.raises(ValueError, match="timeout must be a positive finite number"):
+        FanvilWebConfig("phone.example", "admin", "secret", timeout=timeout)

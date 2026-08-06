@@ -2,6 +2,7 @@
 
 from .client import FanvilClient, FanvilResponse
 from .network import NetworkConfig, build_network_xml, map_ip, plan_static_network
+from .rtsp import RTSPStreamConfig, build_rtsp_url
 from .webconfig import (
     FANVIL_OUIS,
     BusyError,
@@ -16,7 +17,9 @@ __all__ = [
     "FanvilClient",
     "FanvilResponse",
     "NetworkConfig",
+    "RTSPStreamConfig",
     "build_network_xml",
+    "build_rtsp_url",
     "map_ip",
     "plan_static_network",
     "FanvilWebConfig",

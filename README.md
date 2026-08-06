@@ -4,12 +4,18 @@ Small Python helpers for Fanvil IP phones and intercoms.
 
 Current scope:
 
+- Render credential-safe, operator-confirmed Fanvil RTSP stream addresses.
 - Build Fanvil XMLService payloads for static IPv4 network changes.
 - Apply XMLService requests with basic or digest authentication.
 - Plan host-octet-preserving subnet migrations.
 - Keep disruptive IP changes explicit and easy to dry-run.
 
 This package is intentionally generic. Site-specific inventory and migration ordering should live outside the package.
+
+Fanvil video-capable firmware displays the effective main/sub-stream URLs in
+its camera settings. Pass that reviewed path explicitly; the library does not
+guess camera capability or a stream path from a model name. Never persist or
+log the rendered URL because it may contain credentials.
 
 ## Install
 

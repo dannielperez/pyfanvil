@@ -4,7 +4,11 @@ from pyfanvil.capture import capture_rtsp_frame
 
 
 def test_capture_rtsp_frame_returns_jpeg_bytes():
-    completed = type("Completed", (), {"returncode": 0, "stdout": b"jpeg"})()
+    completed = type(
+        "Completed",
+        (),
+        {"returncode": 0, "stdout": b"jpeg", "stderr": b""},
+    )()
     with (
         patch("pyfanvil.capture.shutil.which", return_value="/usr/bin/ffmpeg"),
         patch("pyfanvil.capture.subprocess.run", return_value=completed) as run,
@@ -36,4 +40,42 @@ def test_capture_rtsp_frame_returns_sanitized_timeout():
 
     assert result.ok is False
     assert result.error == "RTSP frame capture timed out"
+    assert result.error_kind == "timeout"
     assert "secret" not in result.error
+
+
+def test_capture_rtsp_frame_classifies_authentication_without_exposing_diagnostics():
+    completed = type(
+        "Completed",
+        (),
+        {
+            "returncode": 1,
+            "stdout": b"",
+            "stderr": b"method DESCRIBE failed: 401 Unauthorized password=secret",
+        },
+    )()
+    with (
+        patch("pyfanvil.capture.shutil.which", return_value="/usr/bin/ffmpeg"),
+        patch("pyfanvil.capture.subprocess.run", return_value=completed),
+    ):
+        result = capture_rtsp_frame("rtsp://user:secret@example.invalid/confirmed")
+
+    assert result.error_kind == "authentication"
+    assert result.error == "RTSP authentication failed"
+    assert "secret" not in result.error
+
+
+def test_capture_rtsp_frame_classifies_missing_path():
+    completed = type(
+        "Completed",
+        (),
+        {"returncode": 1, "stdout": b"", "stderr": b"404 Not Found"},
+    )()
+    with (
+        patch("pyfanvil.capture.shutil.which", return_value="/usr/bin/ffmpeg"),
+        patch("pyfanvil.capture.subprocess.run", return_value=completed),
+    ):
+        result = capture_rtsp_frame("rtsp://example.invalid/wrong")
+
+    assert result.error_kind == "path"
+    assert result.error == "RTSP stream path was not found"

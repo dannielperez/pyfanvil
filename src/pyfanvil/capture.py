@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
+MAX_FRAME_BYTES = 10 * 1024 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class RTSPFrame:
@@ -68,6 +70,8 @@ def capture_rtsp_frame(rtsp_url: str, *, timeout: int = 5) -> RTSPFrame:
         rtsp_url,
         "-frames:v",
         "1",
+        "-fs",
+        str(MAX_FRAME_BYTES + 1),
         "-f",
         "image2",
         "pipe:1",
@@ -85,6 +89,18 @@ def capture_rtsp_frame(rtsp_url: str, *, timeout: int = 5) -> RTSPFrame:
             error="RTSP frame capture timed out",
             error_kind="timeout",
         )
+    except (OSError, subprocess.SubprocessError):
+        return RTSPFrame(
+            ok=False,
+            error="RTSP capture process is unavailable",
+            error_kind="unavailable",
+        )
     if result.returncode != 0 or not result.stdout:
         return _capture_failure(result.stderr)
+    if len(result.stdout) > MAX_FRAME_BYTES:
+        return RTSPFrame(
+            ok=False,
+            error="RTSP frame exceeds the size limit",
+            error_kind="oversized",
+        )
     return RTSPFrame(ok=True, image_bytes=result.stdout)

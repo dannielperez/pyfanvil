@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from pyfanvil.capture import capture_rtsp_frame
+from pyfanvil.capture import MAX_FRAME_BYTES, capture_rtsp_frame
 
 
 def test_capture_rtsp_frame_returns_jpeg_bytes():
@@ -79,3 +79,35 @@ def test_capture_rtsp_frame_classifies_missing_path():
 
     assert result.error_kind == "path"
     assert result.error == "RTSP stream path was not found"
+
+
+def test_capture_rtsp_frame_degrades_when_ffmpeg_cannot_spawn():
+    with (
+        patch("pyfanvil.capture.shutil.which", return_value="/usr/bin/ffmpeg"),
+        patch("pyfanvil.capture.subprocess.run", side_effect=OSError("spawn failed")),
+    ):
+        result = capture_rtsp_frame("rtsp://example.invalid/confirmed")
+
+    assert result.error_kind == "unavailable"
+    assert result.error == "RTSP capture process is unavailable"
+
+
+def test_capture_rtsp_frame_rejects_oversized_output():
+    completed = type(
+        "Completed",
+        (),
+        {
+            "returncode": 0,
+            "stdout": b"x" * (MAX_FRAME_BYTES + 1),
+            "stderr": b"",
+        },
+    )()
+    with (
+        patch("pyfanvil.capture.shutil.which", return_value="/usr/bin/ffmpeg"),
+        patch("pyfanvil.capture.subprocess.run", return_value=completed) as run,
+    ):
+        result = capture_rtsp_frame("rtsp://example.invalid/confirmed")
+
+    assert result.error_kind == "oversized"
+    assert result.image_bytes == b""
+    assert str(MAX_FRAME_BYTES + 1) in run.call_args.args[0]

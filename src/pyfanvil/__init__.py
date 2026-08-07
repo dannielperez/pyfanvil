@@ -1,5 +1,6 @@
 """Fanvil IP phone/intercom helpers."""
 
+from .capture import RTSPFrame, capture_rtsp_frame
 from .client import FanvilClient, FanvilResponse
 from .network import NetworkConfig, build_network_xml, map_ip, plan_static_network
 from .rtsp import RTSPStreamConfig, build_rtsp_url
@@ -18,8 +19,10 @@ __all__ = [
     "FanvilResponse",
     "NetworkConfig",
     "RTSPStreamConfig",
+    "RTSPFrame",
     "build_network_xml",
     "build_rtsp_url",
+    "capture_rtsp_frame",
     "map_ip",
     "plan_static_network",
     "FanvilWebConfig",

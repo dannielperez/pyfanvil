@@ -296,9 +296,16 @@ class FanvilWebConfig:
                 changes["SIP_BackupPort_R"] = backup_port
         return self.set_fields(changes)
 
+    @staticmethod
+    def validate_sip_account(account: int) -> None:
+        """Validate that this firmware facade can address ``account`` safely."""
+        if account != 1:
+            raise ValueError("legacy Fanvil web configuration supports SIP account 1 only")
+
     def set_sip_account(
         self,
         *,
+        account: int = 1,
         server: str,
         port: str = "5060",
         username: str,
@@ -309,7 +316,13 @@ class FanvilWebConfig:
 
         Fanvil form field names and transport encodings stay inside this wrapper;
         callers never need to know the legacy firmware's wire representation.
+
+        The currently supported legacy ``/lines.htm`` form exposes account 1
+        without an account-qualified write target.  Refuse account 2 instead
+        of silently overwriting account 1; a firmware-verified selector must be
+        added before account 2 can be mutated through this facade.
         """
+        self.validate_sip_account(account)
         normalized_transport = transport.lower()
         try:
             transport_value = _SIP_TRANSPORTS[normalized_transport]

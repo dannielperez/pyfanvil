@@ -296,6 +296,12 @@ class FanvilWebConfig:
                 changes["SIP_BackupPort_R"] = backup_port
         return self.set_fields(changes)
 
+    @staticmethod
+    def validate_sip_account(account: int) -> None:
+        """Validate that this firmware facade can address ``account`` safely."""
+        if account != 1:
+            raise ValueError("legacy Fanvil web configuration supports SIP account 1 only")
+
     def set_sip_account(
         self,
         *,
@@ -316,8 +322,7 @@ class FanvilWebConfig:
         of silently overwriting account 1; a firmware-verified selector must be
         added before account 2 can be mutated through this facade.
         """
-        if account != 1:
-            raise ValueError("legacy Fanvil web configuration supports SIP account 1 only")
+        self.validate_sip_account(account)
         normalized_transport = transport.lower()
         try:
             transport_value = _SIP_TRANSPORTS[normalized_transport]

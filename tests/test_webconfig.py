@@ -88,6 +88,7 @@ def test_set_sip_account_maps_neutral_values_to_firmware_fields():
     client.set_fields = Mock()
 
     client.set_sip_account(
+        account=1,
         server="pbx.example",
         username="1001",
         password="sip-secret",
@@ -103,6 +104,21 @@ def test_set_sip_account_maps_neutral_values_to_firmware_fields():
             "SIP_Transport_RW": "1",
         }
     )
+
+
+def test_set_sip_account_refuses_unverified_second_account():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client.set_fields = Mock()
+
+    with pytest.raises(ValueError, match="account 1 only"):
+        client.set_sip_account(
+            account=2,
+            server="pbx.example",
+            username="1002",
+            password="sip-secret",
+        )
+
+    client.set_fields.assert_not_called()
 
 
 def test_set_sip_account_rejects_unsupported_transport():

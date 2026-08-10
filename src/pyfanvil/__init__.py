@@ -3,7 +3,7 @@
 from .capture import RTSPFrame, capture_rtsp_frame
 from .client import FanvilClient, FanvilResponse
 from .network import NetworkConfig, build_network_xml, map_ip, plan_static_network
-from .rtsp import RTSPStreamConfig, build_rtsp_url
+from .rtsp import DEFAULT_RTSP_MAIN_PATH, RTSPStreamConfig, build_rtsp_url
 from .webconfig import (
     FANVIL_OUIS,
     BusyError,
@@ -20,6 +20,7 @@ __all__ = [
     "NetworkConfig",
     "RTSPStreamConfig",
     "RTSPFrame",
+    "DEFAULT_RTSP_MAIN_PATH",
     "build_network_xml",
     "build_rtsp_url",
     "capture_rtsp_frame",

@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import quote
 
+# Fanvil's current video-intercom manuals document this stable main-stream
+# profile.  It is a configuration candidate, not proof that an arbitrary
+# Fanvil endpoint has a local camera; callers must still validate a frame.
+DEFAULT_RTSP_MAIN_PATH = "/h264/stream.live0"
+
 
 @dataclass(frozen=True, slots=True)
 class RTSPStreamConfig:

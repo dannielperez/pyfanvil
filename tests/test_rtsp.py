@@ -1,6 +1,10 @@
 import pytest
 
-from pyfanvil.rtsp import RTSPStreamConfig, build_rtsp_url
+from pyfanvil.rtsp import DEFAULT_RTSP_MAIN_PATH, RTSPStreamConfig, build_rtsp_url
+
+
+def test_exposes_documented_main_stream_candidate():
+    assert DEFAULT_RTSP_MAIN_PATH == "/h264/stream.live0"
 
 
 def test_builds_operator_confirmed_stream_url_without_credentials():

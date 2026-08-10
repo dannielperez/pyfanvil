@@ -17,6 +17,11 @@ its camera settings. Pass that reviewed path explicitly; the library does not
 guess camera capability or a stream path from a model name. Never persist or
 log the rendered URL because it may contain credentials.
 
+Current Fanvil video-intercom manuals document `/h264/stream.live0` as the
+main-stream profile. `DEFAULT_RTSP_MAIN_PATH` exposes that value as an editable
+configuration candidate; callers must still confirm video capability and
+validate a frame before enabling it.
+
 ## Install
 
 ```bash

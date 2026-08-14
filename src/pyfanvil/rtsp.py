@@ -29,7 +29,11 @@ class RTSPStreamConfig:
 
 
 def build_rtsp_url(config: RTSPStreamConfig) -> str:
-    """Build an authenticated RTSP URL for an operator-confirmed stream."""
+    """Build an authenticated RTSP URL for an operator-confirmed stream.
+
+    Fanvil documents the standard URL with RTSP's default port implicit. Keep
+    custom ports explicit while matching that device-native form for port 554.
+    """
     host = config.host.strip()
     if not host:
         raise ValueError("RTSP host is required")
@@ -46,4 +50,5 @@ def build_rtsp_url(config: RTSPStreamConfig) -> str:
         if config.password:
             credentials += f":{quote(config.password, safe='')}"
         credentials += "@"
-    return f"rtsp://{credentials}{host}:{config.port}{path}"
+    port = "" if config.port == 554 else f":{config.port}"
+    return f"rtsp://{credentials}{host}{port}{path}"

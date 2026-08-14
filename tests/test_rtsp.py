@@ -7,12 +7,12 @@ def test_exposes_documented_main_stream_candidate():
     assert DEFAULT_RTSP_MAIN_PATH == "/h264/stream.live0"
 
 
-def test_builds_operator_confirmed_stream_url_without_credentials():
+def test_omits_documented_default_port_from_stream_url():
     assert (
         build_rtsp_url(
-            RTSPStreamConfig(host="192.0.2.10", path="/live/ch00_0"),
+            RTSPStreamConfig(host="192.0.2.10", path=DEFAULT_RTSP_MAIN_PATH),
         )
-        == "rtsp://192.0.2.10:554/live/ch00_0"
+        == "rtsp://192.0.2.10/h264/stream.live0"
     )
 
 

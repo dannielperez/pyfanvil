@@ -142,7 +142,7 @@ def test_capture_http_preview_extracts_first_digest_authenticated_jpeg():
         return httpx.Response(
             200,
             headers={"Content-Type": "multipart/x-mixed-replace; boundary=frame"},
-            content=(
+            stream=httpx.ByteStream(
                 b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
                 b"\xff\xd8first\xff\xd9\r\n--frame\r\n"
                 b"Content-Type: image/jpeg\r\n\r\n\xff\xd8second\xff\xd9"
@@ -167,7 +167,7 @@ def test_capture_http_preview_extracts_first_digest_authenticated_jpeg():
 def test_capture_http_preview_supports_explicit_basic_auth():
     def handler(request):
         assert request.headers["Authorization"].startswith("Basic ")
-        return httpx.Response(200, content=b"\xff\xd8jpeg\xff\xd9")
+        return httpx.Response(200, stream=httpx.ByteStream(b"\xff\xd8jpeg\xff\xd9"))
 
     result = capture_http_preview_frame(
         "camera.local",
@@ -205,7 +205,10 @@ def test_capture_http_preview_rejects_non_jpeg_stream():
         auth_mode="basic",
         timeout=1,
         _transport=_transport(
-            lambda _request: httpx.Response(200, content=b"raw h264 stream"),
+            lambda _request: httpx.Response(
+                200,
+                stream=httpx.ByteStream(b"raw h264 stream"),
+            ),
         ),
     )
 
@@ -224,13 +227,38 @@ def test_capture_http_preview_bounds_first_frame_bytes():
         _transport=_transport(
             lambda _request: httpx.Response(
                 200,
-                content=b"\xff\xd8" + (b"x" * 1024) + b"\xff\xd9",
+                stream=httpx.ByteStream(
+                    b"\xff\xd8" + (b"x" * 1024) + b"\xff\xd9",
+                ),
             ),
         ),
     )
 
     assert result.ok is False
     assert result.error_kind == "image_too_large"
+
+
+def test_capture_http_preview_rejects_jpeg_after_oversized_preamble():
+    oversized_preamble = b"x" * (64 * 1024 + 1)
+
+    def handler(request):
+        assert request.headers["Accept-Encoding"] == "identity"
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(oversized_preamble + b"\xff\xd8small\xff\xd9"),
+        )
+
+    result = capture_http_preview_frame(
+        "camera.local",
+        "user",
+        "secret",
+        auth_mode="basic",
+        timeout=1,
+        _transport=_transport(handler),
+    )
+
+    assert result.ok is False
+    assert result.error_kind == "invalid_image"
 
 
 def test_capture_http_preview_stops_a_drip_fed_stream_at_total_deadline():

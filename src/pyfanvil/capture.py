@@ -16,6 +16,7 @@ MAX_HTTP_PREVIEW_BYTES = 8 * 1024 * 1024
 DEFAULT_HTTP_PREVIEW_PATH = "/cgi-bin/video"
 _HTTP_AUTH_PHASES = 8
 _MAX_MULTIPART_PREAMBLE_BYTES = 64 * 1024
+_HTTP_READ_CHUNK_BYTES = 64 * 1024
 _JPEG_START = b"\xff\xd8"
 _JPEG_END = b"\xff\xd9"
 
@@ -126,7 +127,11 @@ def capture_http_preview_frame(  # noqa: PLR0913 - explicit bounded endpoint/aut
                 verify=verify_tls,
                 transport=_transport,
             ) as client,
-            client.stream("GET", url) as response,
+            client.stream(
+                "GET",
+                url,
+                headers={"Accept-Encoding": "identity"},
+            ) as response,
         ):
             if time.monotonic() >= content_deadline:
                 return _http_preview_failure("timeout")
@@ -138,13 +143,18 @@ def capture_http_preview_frame(  # noqa: PLR0913 - explicit bounded endpoint/aut
             content_type = response.headers.get("Content-Type", "").split(";", 1)[0]
             buffer = bytearray()
             jpeg_started = False
-            for chunk in response.iter_bytes():
+            # Read fixed-size wire chunks instead of decoded chunks. A peer or
+            # proxy must not use one oversized/compressed response chunk to
+            # allocate beyond the caller's frame and preamble limits.
+            for chunk in response.iter_raw(chunk_size=_HTTP_READ_CHUNK_BYTES):
                 if time.monotonic() >= content_deadline:
                     return _http_preview_failure("timeout")
                 buffer.extend(chunk)
                 if not jpeg_started:
                     start = buffer.find(_JPEG_START)
                     if start >= 0:
+                        if start > _MAX_MULTIPART_PREAMBLE_BYTES:
+                            return _http_preview_failure("invalid_image")
                         del buffer[:start]
                         jpeg_started = True
                     elif len(buffer) > _MAX_MULTIPART_PREAMBLE_BYTES:

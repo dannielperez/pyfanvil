@@ -5,7 +5,6 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass
 
-
 CONFIG_KEYS = {
     "dhcp": "net.dhcp.Enabled",
     "ip": "net.static.IP",

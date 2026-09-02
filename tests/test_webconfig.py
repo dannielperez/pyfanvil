@@ -1,6 +1,7 @@
 """Offline tests for the legacy Fanvil web-config driver (no device needed)."""
 
 import base64
+import hashlib
 from unittest.mock import Mock
 
 import pytest
@@ -137,3 +138,125 @@ def test_set_sip_account_rejects_unsupported_transport():
 def test_client_rejects_unbounded_timeout(timeout):
     with pytest.raises(ValueError, match="timeout must be a positive finite number"):
         FanvilWebConfig("phone.example", "admin", "secret", timeout=timeout)
+
+
+@pytest.mark.parametrize("total_timeout", [0, -1, float("inf"), float("nan")])
+def test_client_rejects_invalid_total_timeout(total_timeout):
+    with pytest.raises(ValueError, match="total_timeout must be a positive finite number"):
+        FanvilWebConfig(
+            "phone.example",
+            "admin",
+            "secret",
+            total_timeout=total_timeout,
+        )
+
+
+def test_total_timeout_clamps_each_http_request(monkeypatch):
+    monotonic = iter([10.0, 10.5])
+    monkeypatch.setattr("pyfanvil.webconfig.time.monotonic", lambda: next(monotonic))
+    response = Mock(status_code=200, text="ok")
+    client = FanvilWebConfig(
+        "phone.example",
+        "admin",
+        "secret",
+        timeout=10,
+        total_timeout=3,
+    )
+    client._s.get = Mock(return_value=response)
+
+    assert client._request("/") == "ok"
+
+    client._s.get.assert_called_once_with("http://phone.example/", timeout=2.5)
+    response.raise_for_status.assert_called_once_with()
+
+
+def test_final_busy_attempt_does_not_sleep(monkeypatch):
+    response = Mock(status_code=503)
+    client = FanvilWebConfig(
+        "phone.example",
+        "admin",
+        "secret",
+        max_503_retries=0,
+    )
+    client._s.get = Mock(return_value=response)
+    sleep = Mock()
+    monkeypatch.setattr("pyfanvil.webconfig.time.sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="503 Server Too Busy"):
+        client._request("/")
+
+    sleep.assert_not_called()
+
+
+def test_login_supports_nonce_embedded_in_x_series_form():
+    landing_page = """
+    <form method="post">
+      <input name="nonce" value="0123456789abcdef">
+      <input name="URL" value="/">
+      <input name="LOG_Language" value="0">
+      <input name="goto" value="Logon">
+    </form>
+    """
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(side_effect=[landing_page, '<a href="currentstat.htm">Status</a>'])
+
+    client.login()
+
+    digest = hashlib.md5(b"admin:secret:0123456789abcdef").hexdigest()
+    assert client._request.call_args_list == [
+        (("/",),),
+        (
+            (
+                "/",
+                {
+                    "nonce": "0123456789abcdef",
+                    "URL": "/",
+                    "LOG_Language": "0",
+                    "goto": "Logon",
+                    "encoded": f"admin:{digest}",
+                },
+            ),
+        ),
+    ]
+    assert client._logged_in is True
+
+
+def test_login_keeps_legacy_key_nonce_flow():
+    client = FanvilWebConfig("intercom.example", "admin", "secret")
+    client._request = Mock(
+        side_effect=[
+            "<html>legacy login</html>",
+            "fedcba9876543210",
+            '<frame src="realws.htm">',
+        ]
+    )
+
+    client.login()
+
+    digest = hashlib.md5(b"admin:secret:fedcba9876543210").hexdigest()
+    assert client._request.call_args_list[1].args[0].startswith("/key==nonce?now=")
+    assert client._request.call_args_list[2].args == (
+        "/",
+        {
+            "CurLanguage": "en",
+            "ReturnPage": "/",
+            "encoded": f"admin:{digest}",
+        },
+    )
+    assert client._logged_in is True
+
+
+def test_login_rejects_form_nonce_when_authenticated_marker_never_appears():
+    client = FanvilWebConfig("phone.example", "admin", "wrong")
+    client._request = Mock(
+        side_effect=[
+            '<input name="nonce" value="0123456789abcdef">',
+            "<html>login failed</html>",
+            '<input name="nonce" value="fedcba9876543210">',
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="app-session login failed"):
+        client.login()
+
+    assert client._logged_in is False

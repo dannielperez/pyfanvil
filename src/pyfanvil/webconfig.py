@@ -8,9 +8,10 @@ that key off the ``Server:`` banner) mis-identify these units and fail.
 
 This module drives that firmware headlessly:
 
-* **Auth** – HTTP Basic (realm ``VoIP Phone``) *plus* an app session obtained by
-  ``GET /key==nonce`` then ``POST /`` with ``encoded = "<user>:" +
-  md5("<user>:<pass>:<nonce>")``.
+* **Auth** – HTTP Basic (realm ``VoIP Phone``) *plus* an app session obtained
+  from either the legacy ``GET /key==nonce`` endpoint or the nonce embedded in
+  the login form used by X-series phone firmware. Both submit ``encoded =
+  "<user>:" + md5("<user>:<pass>:<nonce>")``.
 * **Read** – ``GET /lines.htm`` (server-side-filled form fields such as
   ``SIP_RegUser_R``, ``SIP_RegAddr_R``, ``SIP_BackupAddr_R``).
 * **Write** – a faithful *full-form replay*: re-POST every field of the ``sipForm``
@@ -49,6 +50,7 @@ FANVIL_OUIS = ("0c:38:3e", "00:a8:59")
 
 _SIP_ANCHOR = "SIP_RegAddr_R"  # a field unique to the SIP account form (``sipForm``)
 _SIP_TRANSPORTS = {"udp": "0", "tcp": "1"}
+_AUTHENTICATED_PAGE_MARKERS = ("realws.htm", "currentstat.htm")
 
 
 class LoginError(RuntimeError):
@@ -226,12 +228,26 @@ class FanvilWebConfig:
 
     # -- auth --------------------------------------------------------------
     def login(self) -> None:
-        self._request("/")
-        nonce = self._request(f"/key==nonce?now={int(time.time() * 1000)}").strip()
+        landing_page = self._request("/")
+        embedded_nonce = _field(landing_page, "nonce")
+        if embedded_nonce:
+            nonce = embedded_nonce
+            payload = {
+                "nonce": nonce,
+                "URL": _field(landing_page, "URL") or "/",
+                "LOG_Language": _field(landing_page, "LOG_Language") or "0",
+                "goto": _field(landing_page, "goto") or "Logon",
+            }
+        else:
+            nonce = self._request(f"/key==nonce?now={int(time.time() * 1000)}").strip()
+            payload = {"CurLanguage": "en", "ReturnPage": "/"}
+
         digest = hashlib.md5(f"{self.username}:{self.password}:{nonce}".encode()).hexdigest()
-        encoded = f"{self.username}:{digest}"
-        self._request("/", {"encoded": encoded, "CurLanguage": "en", "ReturnPage": "/"})
-        if "realws.htm" not in self._request("/"):
+        payload["encoded"] = f"{self.username}:{digest}"
+        response = self._request("/", payload)
+        if not any(marker in response for marker in _AUTHENTICATED_PAGE_MARKERS):
+            response = self._request("/")
+        if not any(marker in response for marker in _AUTHENTICATED_PAGE_MARKERS):
             raise LoginError(f"{self.host}: app-session login failed")
         self._logged_in = True
 

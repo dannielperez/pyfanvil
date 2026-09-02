@@ -1,6 +1,7 @@
 """Offline tests for the legacy Fanvil web-config driver (no device needed)."""
 
 import base64
+import hashlib
 from unittest.mock import Mock
 
 import pytest
@@ -137,3 +138,77 @@ def test_set_sip_account_rejects_unsupported_transport():
 def test_client_rejects_unbounded_timeout(timeout):
     with pytest.raises(ValueError, match="timeout must be a positive finite number"):
         FanvilWebConfig("phone.example", "admin", "secret", timeout=timeout)
+
+
+def test_login_supports_nonce_embedded_in_x_series_form():
+    landing_page = """
+    <form method="post">
+      <input name="nonce" value="0123456789abcdef">
+      <input name="URL" value="/">
+      <input name="LOG_Language" value="0">
+      <input name="goto" value="Logon">
+    </form>
+    """
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(side_effect=[landing_page, '<a href="currentstat.htm">Status</a>'])
+
+    client.login()
+
+    digest = hashlib.md5(b"admin:secret:0123456789abcdef").hexdigest()
+    assert client._request.call_args_list == [
+        (("/",),),
+        (
+            (
+                "/",
+                {
+                    "nonce": "0123456789abcdef",
+                    "URL": "/",
+                    "LOG_Language": "0",
+                    "goto": "Logon",
+                    "encoded": f"admin:{digest}",
+                },
+            ),
+        ),
+    ]
+    assert client._logged_in is True
+
+
+def test_login_keeps_legacy_key_nonce_flow():
+    client = FanvilWebConfig("intercom.example", "admin", "secret")
+    client._request = Mock(
+        side_effect=[
+            "<html>legacy login</html>",
+            "fedcba9876543210",
+            '<frame src="realws.htm">',
+        ]
+    )
+
+    client.login()
+
+    digest = hashlib.md5(b"admin:secret:fedcba9876543210").hexdigest()
+    assert client._request.call_args_list[1].args[0].startswith("/key==nonce?now=")
+    assert client._request.call_args_list[2].args == (
+        "/",
+        {
+            "CurLanguage": "en",
+            "ReturnPage": "/",
+            "encoded": f"admin:{digest}",
+        },
+    )
+    assert client._logged_in is True
+
+
+def test_login_rejects_form_nonce_when_authenticated_marker_never_appears():
+    client = FanvilWebConfig("phone.example", "admin", "wrong")
+    client._request = Mock(
+        side_effect=[
+            '<input name="nonce" value="0123456789abcdef">',
+            "<html>login failed</html>",
+            '<input name="nonce" value="fedcba9876543210">',
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="app-session login failed"):
+        client.login()
+
+    assert client._logged_in is False

@@ -178,6 +178,7 @@ class FanvilWebConfig:
         *,
         scheme: str = "http",
         timeout: float = 10.0,
+        total_timeout: float | None = None,
         max_503_retries: int = 2,
         retry_backoff: float = 5.0,
     ) -> None:
@@ -192,6 +193,15 @@ class FanvilWebConfig:
         if not math.isfinite(retry_backoff) or not 0 <= retry_backoff <= 5:
             raise ValueError("retry_backoff must be finite and between 0 and 5 seconds")
         self.timeout = min(timeout, 30.0)
+        if total_timeout is not None and (
+            not math.isfinite(total_timeout) or total_timeout <= 0
+        ):
+            raise ValueError("total_timeout must be a positive finite number")
+        self._deadline = (
+            time.monotonic() + min(total_timeout, 30.0)
+            if total_timeout is not None
+            else None
+        )
         self.max_503_retries = max_503_retries
         self.retry_backoff = retry_backoff
         self._s = requests.Session()
@@ -210,17 +220,31 @@ class FanvilWebConfig:
     def _url(self, path: str) -> str:
         return f"{self.scheme}://{self.host}{path}"
 
+    def _request_timeout(self) -> float:
+        if self._deadline is None:
+            return self.timeout
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise requests.Timeout(f"{self.host}: operation timeout")
+        return min(self.timeout, remaining)
+
     def _request(self, path: str, data: dict | None = None) -> str:
         last: Exception | None = None
         for attempt in range(self.max_503_retries + 1):
+            timeout = self._request_timeout()
             r = (
-                self._s.post(self._url(path), data=data, timeout=self.timeout)
+                self._s.post(self._url(path), data=data, timeout=timeout)
                 if data
-                else self._s.get(self._url(path), timeout=self.timeout)
+                else self._s.get(self._url(path), timeout=timeout)
             )
             if r.status_code == 503:
                 last = BusyError(f"{self.host}: 503 Server Too Busy")
-                time.sleep(self.retry_backoff * (attempt + 1))
+                if attempt < self.max_503_retries:
+                    delay = self.retry_backoff * (attempt + 1)
+                    if self._deadline is not None:
+                        delay = min(delay, max(0.0, self._deadline - time.monotonic()))
+                    if delay > 0:
+                        time.sleep(delay)
                 continue
             r.raise_for_status()
             return r.text
@@ -289,7 +313,11 @@ class FanvilWebConfig:
         if not parser.fields:
             raise RuntimeError(f"{self.host}: SIP form not found on /lines.htm")
         body = build_replay_body(parser.fields, changes)
-        self._s.post(self._url("/lines.htm"), data=body, timeout=self.timeout).raise_for_status()
+        self._s.post(
+            self._url("/lines.htm"),
+            data=body,
+            timeout=self._request_timeout(),
+        ).raise_for_status()
         return self.read_sip()
 
     def set_sip_server(

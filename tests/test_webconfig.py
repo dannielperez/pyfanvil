@@ -140,6 +140,54 @@ def test_client_rejects_unbounded_timeout(timeout):
         FanvilWebConfig("phone.example", "admin", "secret", timeout=timeout)
 
 
+@pytest.mark.parametrize("total_timeout", [0, -1, float("inf"), float("nan")])
+def test_client_rejects_invalid_total_timeout(total_timeout):
+    with pytest.raises(ValueError, match="total_timeout must be a positive finite number"):
+        FanvilWebConfig(
+            "phone.example",
+            "admin",
+            "secret",
+            total_timeout=total_timeout,
+        )
+
+
+def test_total_timeout_clamps_each_http_request(monkeypatch):
+    monotonic = iter([10.0, 10.5])
+    monkeypatch.setattr("pyfanvil.webconfig.time.monotonic", lambda: next(monotonic))
+    response = Mock(status_code=200, text="ok")
+    client = FanvilWebConfig(
+        "phone.example",
+        "admin",
+        "secret",
+        timeout=10,
+        total_timeout=3,
+    )
+    client._s.get = Mock(return_value=response)
+
+    assert client._request("/") == "ok"
+
+    client._s.get.assert_called_once_with("http://phone.example/", timeout=2.5)
+    response.raise_for_status.assert_called_once_with()
+
+
+def test_final_busy_attempt_does_not_sleep(monkeypatch):
+    response = Mock(status_code=503)
+    client = FanvilWebConfig(
+        "phone.example",
+        "admin",
+        "secret",
+        max_503_retries=0,
+    )
+    client._s.get = Mock(return_value=response)
+    sleep = Mock()
+    monkeypatch.setattr("pyfanvil.webconfig.time.sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="503 Server Too Busy"):
+        client._request("/")
+
+    sleep.assert_not_called()
+
+
 def test_login_supports_nonce_embedded_in_x_series_form():
     landing_page = """
     <form method="post">

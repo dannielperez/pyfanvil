@@ -264,7 +264,7 @@ class FanvilWebConfig:
             }
         else:
             nonce = self._request(f"/key==nonce?now={int(time.time() * 1000)}").strip()
-            payload = {"CurLanguage": "en", "ReturnPage": "/"}
+            payload = {"ReturnPage": "/"}
 
         digest = hashlib.md5(f"{self.username}:{self.password}:{nonce}".encode()).hexdigest()
         payload["encoded"] = f"{self.username}:{digest}"

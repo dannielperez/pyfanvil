@@ -9,7 +9,7 @@
   hidden `ReturnPage` input without a value; the deployed SDK sent `/`, and the
   owner-approved UniqueOS connection test still failed at app-session login.
 - Validation: targeted test failed before the implementation and passed after;
-  full suite passed (`52 passed`); `ruff check .` passed; formatting was applied
+  full suite passed (`53 passed`); `ruff check .` passed; formatting was applied
   to the touched module.
 - Review fanout: SDK-boundary reviewer `OK`; stability reviewer `OK`; migration
   review not applicable because the change has no model, migration, or backfill.

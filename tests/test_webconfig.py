@@ -238,7 +238,7 @@ def test_login_keeps_legacy_key_nonce_flow():
     assert client._request.call_args_list[2].args == (
         "/",
         {
-            "ReturnPage": "/",
+            "ReturnPage": "",
             "encoded": f"admin:{digest}",
         },
     )

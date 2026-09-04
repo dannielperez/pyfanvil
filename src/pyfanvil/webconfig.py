@@ -12,7 +12,8 @@ This module drives that firmware headlessly:
   from either the legacy ``GET /key==nonce`` endpoint or the nonce embedded in
   the login form used by X-series phone firmware. Both submit ``encoded =
   "<user>:" + md5("<user>:<pass>:<nonce>")``. Legacy firmware also requires
-  the nonce in its ``auth`` cookie to correlate that form post.
+  the nonce in its ``auth`` cookie and an empty ``ReturnPage`` value to
+  correlate that form post exactly as the browser login does.
 * **Read** – ``GET /lines.htm`` (server-side-filled form fields such as
   ``SIP_RegUser_R``, ``SIP_RegAddr_R``, ``SIP_BackupAddr_R``).
 * **Write** – a faithful *full-form replay*: re-POST every field of the ``sipForm``
@@ -194,14 +195,10 @@ class FanvilWebConfig:
         if not math.isfinite(retry_backoff) or not 0 <= retry_backoff <= 5:
             raise ValueError("retry_backoff must be finite and between 0 and 5 seconds")
         self.timeout = min(timeout, 30.0)
-        if total_timeout is not None and (
-            not math.isfinite(total_timeout) or total_timeout <= 0
-        ):
+        if total_timeout is not None and (not math.isfinite(total_timeout) or total_timeout <= 0):
             raise ValueError("total_timeout must be a positive finite number")
         self._deadline = (
-            time.monotonic() + min(total_timeout, 30.0)
-            if total_timeout is not None
-            else None
+            time.monotonic() + min(total_timeout, 30.0) if total_timeout is not None else None
         )
         self.max_503_retries = max_503_retries
         self.retry_backoff = retry_backoff
@@ -266,7 +263,7 @@ class FanvilWebConfig:
         else:
             nonce = self._request(f"/key==nonce?now={int(time.time() * 1000)}")[:16]
             self._s.cookies.set("auth", nonce, path="/")
-            payload = {"ReturnPage": "/"}
+            payload = {"ReturnPage": ""}
 
         digest = hashlib.md5(f"{self.username}:{self.password}:{nonce}".encode()).hexdigest()
         payload["encoded"] = f"{self.username}:{digest}"

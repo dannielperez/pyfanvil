@@ -226,7 +226,7 @@ def test_login_keeps_legacy_key_nonce_flow():
     client._request = Mock(
         side_effect=[
             "<html>legacy login</html>",
-            "fedcba9876543210",
+            "fedcba9876543210ignored",
             '<frame src="realws.htm">',
         ]
     )
@@ -242,6 +242,7 @@ def test_login_keeps_legacy_key_nonce_flow():
             "encoded": f"admin:{digest}",
         },
     )
+    assert client._s.cookies.get("auth") == "fedcba9876543210"
     assert client._logged_in is True
 
 

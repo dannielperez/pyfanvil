@@ -12,8 +12,8 @@ This module drives that firmware headlessly:
   from either the legacy ``GET /key==nonce`` endpoint or the nonce embedded in
   the login form used by X-series phone firmware. Both submit ``encoded =
   "<user>:" + md5("<user>:<pass>:<nonce>")``. Legacy firmware also requires
-  the nonce in its ``auth`` cookie and an empty ``ReturnPage`` value to
-  correlate that form post exactly as the browser login does.
+  the nonce in its ``auth`` cookie. The wrapper replays the login form's own
+  ``ReturnPage`` value so firmware variants receive the value they advertise.
 * **Read** – ``GET /lines.htm`` (server-side-filled form fields such as
   ``SIP_RegUser_R``, ``SIP_RegAddr_R``, ``SIP_BackupAddr_R``).
 * **Write** – a faithful *full-form replay*: re-POST every field of the ``sipForm``
@@ -263,7 +263,7 @@ class FanvilWebConfig:
         else:
             nonce = self._request(f"/key==nonce?now={int(time.time() * 1000)}")[:16]
             self._s.cookies.set("auth", nonce, path="/")
-            payload = {"ReturnPage": ""}
+            payload = {"ReturnPage": _field(landing_page, "ReturnPage") or ""}
 
         digest = hashlib.md5(f"{self.username}:{self.password}:{nonce}".encode()).hexdigest()
         payload["encoded"] = f"{self.username}:{digest}"

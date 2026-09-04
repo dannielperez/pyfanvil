@@ -225,7 +225,7 @@ def test_login_keeps_legacy_key_nonce_flow():
     client = FanvilWebConfig("intercom.example", "admin", "secret")
     client._request = Mock(
         side_effect=[
-            "<html>legacy login</html>",
+            '<html><input type="hidden" name="ReturnPage"></html>',
             "fedcba9876543210ignored",
             '<frame src="realws.htm">',
         ]
@@ -244,6 +244,28 @@ def test_login_keeps_legacy_key_nonce_flow():
     )
     assert client._s.cookies.get("auth") == "fedcba9876543210"
     assert client._logged_in is True
+
+
+def test_login_replays_legacy_return_page_advertised_by_firmware():
+    client = FanvilWebConfig("intercom.example", "admin", "secret")
+    client._request = Mock(
+        side_effect=[
+            '<input type="hidden" name="ReturnPage" value="/legacy.htm">',
+            "fedcba9876543210ignored",
+            '<frame src="realws.htm">',
+        ]
+    )
+
+    client.login()
+
+    digest = hashlib.md5(b"admin:secret:fedcba9876543210").hexdigest()
+    assert client._request.call_args_list[2].args == (
+        "/",
+        {
+            "ReturnPage": "/legacy.htm",
+            "encoded": f"admin:{digest}",
+        },
+    )
 
 
 def test_login_rejects_form_nonce_when_authenticated_marker_never_appears():

@@ -161,6 +161,13 @@ def _checked(html: str, name: str) -> bool:
     return bool(m and re.search(r"\bchecked\b", m.group(0), re.I))
 
 
+def _is_authenticated_page(html: str) -> bool:
+    """Recognize authenticated shells used across Fanvil firmware families."""
+    return any(marker in html for marker in _AUTHENTICATED_PAGE_MARKERS) or bool(
+        re.search(r"<frameset\b", html, re.I)
+    )
+
+
 class FanvilWebConfig:
     """Headless session against the legacy Fanvil web-config firmware.
 
@@ -268,9 +275,9 @@ class FanvilWebConfig:
         digest = hashlib.md5(f"{self.username}:{self.password}:{nonce}".encode()).hexdigest()
         payload["encoded"] = f"{self.username}:{digest}"
         response = self._request("/", payload)
-        if not any(marker in response for marker in _AUTHENTICATED_PAGE_MARKERS):
+        if not _is_authenticated_page(response):
             response = self._request("/")
-        if not any(marker in response for marker in _AUTHENTICATED_PAGE_MARKERS):
+        if not _is_authenticated_page(response):
             raise LoginError(f"{self.host}: app-session login failed")
         self._logged_in = True
 
@@ -286,9 +293,20 @@ class FanvilWebConfig:
     def identify(self) -> DeviceInfo:
         html = self._request("/information.htm")
         macs = re.findall(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", html)
-        model = re.search(r"(?i)\b(i[0-9]{2}[A-Za-z]?|[A-Z][0-9]{2,3}[A-Za-z]?)\b", html)
+        labeled_model = re.search(
+            r'id=["\']XSTR_LBL_INFO_MODEL["\'][^>]*>.*?</span>\s*:?\s*</td>'
+            r"\s*<td[^>]*>\s*([^<]+)",
+            html,
+            re.I | re.S,
+        )
+        fallback_model = re.search(r"(?i)\b(i[0-9]{2}[A-Za-z]?|[A-Z][0-9]{2,3}[A-Za-z]?)\b", html)
         return DeviceInfo(
-            mac=(macs[0].lower() if macs else None), model=(model.group(1) if model else None)
+            mac=(macs[0].lower() if macs else None),
+            model=(
+                _unescape(labeled_model.group(1).strip())
+                if labeled_model
+                else (fallback_model.group(1) if fallback_model else None)
+            ),
         )
 
     # -- SIP account -------------------------------------------------------

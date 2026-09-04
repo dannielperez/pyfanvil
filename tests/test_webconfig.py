@@ -47,6 +47,24 @@ def test_device_info_is_fanvil():
     assert not DeviceInfo(mac="ff:ff:ff:00:00:01", model="?").is_fanvil
 
 
+def test_identify_reads_slash_separated_model_from_information_label():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(
+        return_value="""
+        <tr>
+          <td><span id="XSTR_LBL_INFO_MODEL">Model</span>:</td>
+          <td>X3S/X3SP</td>
+        </tr>
+        <tr><td>MAC</td><td>0c:38:3e:00:00:01</td></tr>
+        """
+    )
+
+    info = client.identify()
+
+    assert info.model == "X3S/X3SP"
+    assert info.is_fanvil is True
+
+
 def test_field_and_checked_readers():
     assert _field(SAMPLE_FORM, "SIP_RegAddr_R") == "10.0.0.1"
     assert _field(SAMPLE_FORM, "SIP_BackupAddr_R") == "9.9.9.9"
@@ -266,6 +284,21 @@ def test_login_replays_legacy_return_page_advertised_by_firmware():
             "encoded": f"admin:{digest}",
         },
     )
+
+
+def test_login_accepts_authenticated_rapid_logic_frameset():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(
+        side_effect=[
+            '<input type="hidden" name="ReturnPage" value="/">',
+            "fedcba9876543210ignored",
+            '<HTML><FRAMESET ROWS="60,*"><FRAME NAME="title_top"></FRAMESET></HTML>',
+        ]
+    )
+
+    client.login()
+
+    assert client._logged_in is True
 
 
 def test_login_rejects_form_nonce_when_authenticated_marker_never_appears():

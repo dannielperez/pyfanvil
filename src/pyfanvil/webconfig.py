@@ -11,7 +11,8 @@ This module drives that firmware headlessly:
 * **Auth** – HTTP Basic (realm ``VoIP Phone``) *plus* an app session obtained
   from either the legacy ``GET /key==nonce`` endpoint or the nonce embedded in
   the login form used by X-series phone firmware. Both submit ``encoded =
-  "<user>:" + md5("<user>:<pass>:<nonce>")``.
+  "<user>:" + md5("<user>:<pass>:<nonce>")``. Legacy firmware also requires
+  the nonce in its ``auth`` cookie to correlate that form post.
 * **Read** – ``GET /lines.htm`` (server-side-filled form fields such as
   ``SIP_RegUser_R``, ``SIP_RegAddr_R``, ``SIP_BackupAddr_R``).
 * **Write** – a faithful *full-form replay*: re-POST every field of the ``sipForm``
@@ -263,7 +264,8 @@ class FanvilWebConfig:
                 "goto": _field(landing_page, "goto") or "Logon",
             }
         else:
-            nonce = self._request(f"/key==nonce?now={int(time.time() * 1000)}").strip()
+            nonce = self._request(f"/key==nonce?now={int(time.time() * 1000)}")[:16]
+            self._s.cookies.set("auth", nonce, path="/")
             payload = {"ReturnPage": "/"}
 
         digest = hashlib.md5(f"{self.username}:{self.password}:{nonce}".encode()).hexdigest()

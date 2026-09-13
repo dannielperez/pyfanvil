@@ -5,6 +5,7 @@ import hashlib
 from unittest.mock import Mock
 
 import pytest
+import requests
 
 from pyfanvil import DeviceInfo, FanvilWebConfig, is_fanvil_mac
 from pyfanvil.webconfig import (
@@ -125,6 +126,69 @@ def test_set_sip_account_maps_neutral_values_to_firmware_fields():
     )
 
 
+@pytest.mark.parametrize("write_error", [requests.ReadTimeout(), requests.ConnectionError()])
+def test_set_fields_accepts_ambiguous_write_when_readback_matches(write_error):
+    updated_form = (
+        SAMPLE_FORM.replace('value="3102"', 'value="118"')
+        .replace('value="10.0.0.1"', 'value="pbx.example"')
+        .replace('<option value="1" selected>', '<option value="1" selected>')
+    )
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(side_effect=[SAMPLE_FORM, updated_form])
+    client._s.post = Mock(side_effect=write_error)
+    client._s.get = Mock(
+        return_value=Mock(status_code=200, text=updated_form),
+    )
+
+    result = client.set_fields(
+        {
+            "SIP_RegAddr_R": "pbx.example",
+            "SIP_RegUser_R": "118",
+            "SIP_RegPasswd_R": "new-secret",
+            "SIP_Transport_RW": "1",
+        }
+    )
+
+    assert result.ext == "118"
+    assert result.primary == "pbx.example"
+    client._s.post.assert_called_once()
+    client._s.get.assert_called_once()
+
+
+def test_set_fields_reraises_ambiguous_write_when_readback_does_not_match(monkeypatch):
+    client = FanvilWebConfig(
+        "phone.example",
+        "admin",
+        "secret",
+        write_verify_timeout=0.1,
+        write_verify_interval=0,
+    )
+    client._request = Mock(return_value=SAMPLE_FORM)
+    original_error = requests.ReadTimeout("response lost")
+    client._s.post = Mock(side_effect=original_error)
+    client._s.get = Mock(return_value=Mock(status_code=200, text=SAMPLE_FORM))
+    monotonic = iter([0.0, 0.0, 0.0, 0.11])
+    monkeypatch.setattr("pyfanvil.webconfig.time.monotonic", lambda: next(monotonic))
+    monkeypatch.setattr("pyfanvil.webconfig.time.sleep", Mock())
+
+    with pytest.raises(requests.ReadTimeout, match="response lost"):
+        client.set_fields({"SIP_RegUser_R": "118"})
+
+    client._s.post.assert_called_once()
+
+
+def test_set_fields_does_not_accept_password_only_ambiguous_write():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(return_value=SAMPLE_FORM)
+    client._s.post = Mock(side_effect=requests.ReadTimeout("response lost"))
+    client._s.get = Mock()
+
+    with pytest.raises(requests.ReadTimeout, match="response lost"):
+        client.set_fields({"SIP_RegPasswd_R": "new-secret"})
+
+    client._s.get.assert_not_called()
+
+
 def test_set_sip_account_refuses_unverified_second_account():
     client = FanvilWebConfig("phone.example", "admin", "secret")
     client.set_fields = Mock()
@@ -166,6 +230,17 @@ def test_client_rejects_invalid_total_timeout(total_timeout):
             "admin",
             "secret",
             total_timeout=total_timeout,
+        )
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_client_rejects_invalid_write_verify_timeout(timeout):
+    with pytest.raises(ValueError, match="write_verify_timeout"):
+        FanvilWebConfig(
+            "phone.example",
+            "admin",
+            "secret",
+            write_verify_timeout=timeout,
         )
 
 

@@ -370,6 +370,8 @@ class FanvilWebConfig:
     ) -> SipAccount | None:
         """Boundedly confirm an ambiguous SIP-form write without replaying it."""
         deadline = time.monotonic() + self.write_verify_timeout
+        if self._deadline is not None:
+            deadline = min(deadline, self._deadline)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

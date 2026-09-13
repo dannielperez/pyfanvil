@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -177,6 +178,28 @@ def test_set_fields_reraises_ambiguous_write_when_readback_does_not_match(monkey
     client._s.post.assert_called_once()
 
 
+def test_ambiguous_write_readback_stays_inside_aggregate_deadline(monkeypatch):
+    client = FanvilWebConfig(
+        "phone.example",
+        "admin",
+        "secret",
+        timeout=10,
+        write_verify_timeout=10,
+    )
+    client._deadline = 102.0
+    client._s.get = Mock(return_value=Mock(status_code=200, text=SAMPLE_FORM))
+    monotonic = iter([100.0, 100.0])
+    monkeypatch.setattr("pyfanvil.webconfig.time.monotonic", lambda: next(monotonic))
+
+    result = client._verify_fields_after_ambiguous_write({"SIP_RegUser_R": "3102"})
+
+    assert result is not None
+    client._s.get.assert_called_once_with(
+        "http://phone.example/lines.htm",
+        timeout=2.0,
+    )
+
+
 def test_set_fields_does_not_accept_password_only_ambiguous_write():
     client = FanvilWebConfig("phone.example", "admin", "secret")
     client._request = Mock(return_value=SAMPLE_FORM)
@@ -260,6 +283,24 @@ def test_client_rejects_invalid_write_verify_timeout(timeout):
             "secret",
             write_verify_timeout=timeout,
         )
+
+
+def test_provisioning_profile_owns_bounded_transport_policy():
+    client = FanvilWebConfig.for_provisioning(
+        "phone.example",
+        "admin",
+        "secret",
+        scheme="https",
+    )
+
+    assert client.host == "phone.example"
+    assert client.scheme == "https"
+    assert client.timeout == 10.0
+    assert client._deadline is not None
+    assert 0 < client._deadline - time.monotonic() <= 30.0
+    assert client.max_503_retries == 1
+    assert client.retry_backoff == 1.0
+    assert client.write_verify_timeout == 10.0
 
 
 def test_total_timeout_clamps_each_http_request(monkeypatch):

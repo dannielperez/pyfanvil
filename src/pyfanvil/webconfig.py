@@ -53,6 +53,11 @@ FANVIL_OUIS = ("0c:38:3e", "00:a8:59")
 _SIP_ANCHOR = "SIP_RegAddr_R"  # a field unique to the SIP account form (``sipForm``)
 _SIP_TRANSPORTS = {"udp": "0", "tcp": "1"}
 _AUTHENTICATED_PAGE_MARKERS = ("realws.htm", "currentstat.htm")
+PROVISIONING_REQUEST_TIMEOUT = 10.0
+PROVISIONING_TOTAL_TIMEOUT = 30.0
+PROVISIONING_MAX_503_RETRIES = 1
+PROVISIONING_RETRY_BACKOFF = 1.0
+PROVISIONING_WRITE_VERIFY_TIMEOUT = 10.0
 
 
 class LoginError(RuntimeError):
@@ -232,6 +237,33 @@ class FanvilWebConfig:
         self._s.auth = HTTPBasicAuth(username, password)
         self._logged_in = False
 
+    @classmethod
+    def for_provisioning(
+        cls,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        scheme: str = "http",
+    ) -> FanvilWebConfig:
+        """Build the bounded client profile for one SIP provisioning run.
+
+        These budgets describe Fanvil's constrained legacy HTTP implementation,
+        so the SDK owns them instead of requiring application callers to tune
+        individual transport, busy-retry, and ambiguous-write phases.
+        """
+        return cls(
+            host,
+            username,
+            password,
+            scheme=scheme,
+            timeout=PROVISIONING_REQUEST_TIMEOUT,
+            total_timeout=PROVISIONING_TOTAL_TIMEOUT,
+            max_503_retries=PROVISIONING_MAX_503_RETRIES,
+            retry_backoff=PROVISIONING_RETRY_BACKOFF,
+            write_verify_timeout=PROVISIONING_WRITE_VERIFY_TIMEOUT,
+        )
+
     # -- context manager ---------------------------------------------------
     def __enter__(self) -> FanvilWebConfig:
         self.login()
@@ -338,6 +370,8 @@ class FanvilWebConfig:
     ) -> SipAccount | None:
         """Boundedly confirm an ambiguous SIP-form write without replaying it."""
         deadline = time.monotonic() + self.write_verify_timeout
+        if self._deadline is not None:
+            deadline = min(deadline, self._deadline)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

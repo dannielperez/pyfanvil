@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -260,6 +261,24 @@ def test_client_rejects_invalid_write_verify_timeout(timeout):
             "secret",
             write_verify_timeout=timeout,
         )
+
+
+def test_provisioning_profile_owns_bounded_transport_policy():
+    client = FanvilWebConfig.for_provisioning(
+        "phone.example",
+        "admin",
+        "secret",
+        scheme="https",
+    )
+
+    assert client.host == "phone.example"
+    assert client.scheme == "https"
+    assert client.timeout == 10.0
+    assert client._deadline is not None
+    assert 0 < client._deadline - time.monotonic() <= 30.0
+    assert client.max_503_retries == 1
+    assert client.retry_backoff == 1.0
+    assert client.write_verify_timeout == 10.0
 
 
 def test_total_timeout_clamps_each_http_request(monkeypatch):

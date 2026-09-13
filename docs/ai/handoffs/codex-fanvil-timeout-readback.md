@@ -10,7 +10,7 @@
 
 ## Validation
 
-- `uv run --extra dev pytest -q` — 63 passed.
+- `uv run --extra dev pytest -q` — 64 passed.
 - `uv run --extra dev ruff check .` — passed.
 - `uv run --extra dev ruff format --check src tests` — passed.
 - Repository-wide format check additionally reports the pre-existing README code
@@ -20,7 +20,9 @@
 
 - Deterministic HTTP errors still fail immediately.
 - Ambiguous writes are accepted only after exact readback of every requested
-  non-password form field; password-only writes cannot be inferred successful.
+  non-password form field and proof that at least one visible value changed.
+  Password-only writes, or password changes with already-matching visible values,
+  cannot be inferred successful.
 - Verification is bounded to 10 seconds by default and capped at 30 seconds.
 - No mutation is retried, avoiding duplicate or oscillating device writes.
 

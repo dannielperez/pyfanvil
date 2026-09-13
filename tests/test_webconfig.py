@@ -189,6 +189,24 @@ def test_set_fields_does_not_accept_password_only_ambiguous_write():
     client._s.get.assert_not_called()
 
 
+def test_set_fields_does_not_infer_password_change_from_unchanged_visible_fields():
+    current_form = SAMPLE_FORM.replace('value="3102"', 'value="118"')
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(return_value=current_form)
+    client._s.post = Mock(side_effect=requests.ReadTimeout("response lost"))
+    client._s.get = Mock()
+
+    with pytest.raises(requests.ReadTimeout, match="response lost"):
+        client.set_fields(
+            {
+                "SIP_RegUser_R": "118",
+                "SIP_RegPasswd_R": "new-secret",
+            }
+        )
+
+    client._s.get.assert_not_called()
+
+
 def test_set_sip_account_refuses_unverified_second_account():
     client = FanvilWebConfig("phone.example", "admin", "secret")
     client.set_fields = Mock()

@@ -161,6 +161,17 @@ def _checked(html: str, name: str) -> bool:
     return bool(m and re.search(r"\bchecked\b", m.group(0), re.I))
 
 
+def _sip_account_from_html(html: str) -> SipAccount:
+    return SipAccount(
+        ext=_field(html, "SIP_RegUser_R"),
+        primary=_field(html, "SIP_RegAddr_R"),
+        primary_port=_field(html, "SIP_RegPort_R"),
+        backup=_field(html, "SIP_BackupAddr_R"),
+        backup_port=_field(html, "SIP_BackupPort_R"),
+        failback=_checked(html, "SIP_EnableFailback_RW"),
+    )
+
+
 def _is_authenticated_page(html: str) -> bool:
     """Recognize authenticated shells used across Fanvil firmware families."""
     return any(marker in html for marker in _AUTHENTICATED_PAGE_MARKERS) or bool(
@@ -319,51 +330,18 @@ class FanvilWebConfig:
 
     # -- SIP account -------------------------------------------------------
     def read_sip(self) -> SipAccount:
-        html = self._request("/lines.htm")
-        return SipAccount(
-            ext=_field(html, "SIP_RegUser_R"),
-            primary=_field(html, "SIP_RegAddr_R"),
-            primary_port=_field(html, "SIP_RegPort_R"),
-            backup=_field(html, "SIP_BackupAddr_R"),
-            backup_port=_field(html, "SIP_BackupPort_R"),
-            failback=_checked(html, "SIP_EnableFailback_RW"),
-        )
+        return _sip_account_from_html(self._request("/lines.htm"))
 
-    def set_fields(self, changes: dict[str, str]) -> SipAccount:
-        """Apply ``changes`` (field name -> value) to the SIP form via full-form
-        replay, then return the re-read account. Only the given fields change.
-        """
-        parser = _FormFields(_SIP_ANCHOR)
-        parser.feed(self._request("/lines.htm"))
-        if not parser.fields:
-            raise RuntimeError(f"{self.host}: SIP form not found on /lines.htm")
-        body = build_replay_body(parser.fields, changes)
-        try:
-            self._s.post(
-                self._url("/lines.htm"),
-                data=body,
-                timeout=self._request_timeout(),
-            ).raise_for_status()
-        except (requests.Timeout, requests.ConnectionError):
-            # Applying a SIP account can restart the phone's configuration
-            # service before it sends the HTTP response.  The write outcome is
-            # then ambiguous: never replay the mutation, but accept it when a
-            # bounded readback proves every observable requested field landed.
-            password_fields = {name for name, _, typ in parser.fields if typ == "password"}
-            observable = {
-                name: value for name, value in changes.items() if name not in password_fields
-            }
-            if not observable or not self._verify_fields_after_ambiguous_write(observable):
-                raise
-        return self.read_sip()
-
-    def _verify_fields_after_ambiguous_write(self, expected: dict[str, str]) -> bool:
+    def _verify_fields_after_ambiguous_write(
+        self,
+        expected: dict[str, str],
+    ) -> SipAccount | None:
         """Boundedly confirm an ambiguous SIP-form write without replaying it."""
         deadline = time.monotonic() + self.write_verify_timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return False
+                return None
             try:
                 response = self._s.get(
                     self._url("/lines.htm"),
@@ -376,14 +354,67 @@ class FanvilWebConfig:
                     if parser.fields and all(
                         actual.get(name) == value for name, value in expected.items()
                     ):
-                        return True
+                        return _sip_account_from_html(response.text)
             except (requests.Timeout, requests.ConnectionError):
                 pass
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return False
+                return None
             time.sleep(min(self.write_verify_interval, remaining))
+
+    def set_fields(self, changes: dict[str, str]) -> SipAccount:
+        """Apply ``changes`` (field name -> value) to the SIP form via full-form
+        replay, then return the re-read account. Only the given fields change.
+        """
+        parser = _FormFields(_SIP_ANCHOR)
+        parser.feed(self._request("/lines.htm"))
+        if not parser.fields:
+            raise RuntimeError(f"{self.host}: SIP form not found on /lines.htm")
+        body = build_replay_body(parser.fields, changes)
+        before = {name: value for name, value, _ in parser.fields}
+        password_fields = {name for name, _, typ in parser.fields if typ == "password"}
+        return self._post_sip_fields(
+            body=body,
+            changes=changes,
+            before=before,
+            password_fields=password_fields,
+        )
+
+    def _post_sip_fields(
+        self,
+        *,
+        body: list[tuple[str, str]],
+        changes: dict[str, str],
+        before: dict[str, str],
+        password_fields: set[str],
+    ) -> SipAccount:
+        try:
+            self._s.post(
+                self._url("/lines.htm"),
+                data=body,
+                timeout=self._request_timeout(),
+            ).raise_for_status()
+        except (requests.Timeout, requests.ConnectionError):
+            # Applying a SIP account can restart the phone's configuration
+            # service before it sends the HTTP response.  The write outcome is
+            # then ambiguous: never replay the mutation, but accept it when a
+            # bounded readback proves every observable requested field landed.
+            observable = {
+                name: value for name, value in changes.items() if name not in password_fields
+            }
+            changed_observable = {
+                name: value for name, value in observable.items() if before.get(name) != value
+            }
+            verified = (
+                self._verify_fields_after_ambiguous_write(observable)
+                if changed_observable
+                else None
+            )
+            if verified is None:
+                raise
+            return verified
+        return self.read_sip()
 
     def set_sip_server(
         self,

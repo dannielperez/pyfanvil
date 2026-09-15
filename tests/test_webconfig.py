@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from pyfanvil import DeviceInfo, FanvilWebConfig, is_fanvil_mac
+from pyfanvil import DeviceInfo, FanvilWebConfig, OccupiedSipAccountError, is_fanvil_mac
 from pyfanvil.webconfig import (
     ENCODE_PREFIX,
     _checked,
@@ -204,6 +204,35 @@ def test_set_fields_accepts_ambiguous_write_when_readback_matches(write_error):
     assert result.primary == "pbx.example"
     client._s.post.assert_called_once()
     client._s.get.assert_called_once()
+
+
+def test_set_fields_refuses_unrecognized_populated_registrar_before_write():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(return_value=SAMPLE_FORM)
+    client._s.post = Mock()
+
+    with pytest.raises(OccupiedSipAccountError, match="unrecognized registrar"):
+        client.set_fields(
+            {"SIP_RegAddr_R": "pbx.example", "SIP_RegUser_R": "118"},
+            allowed_existing_registrars=("pbx.example",),
+        )
+
+    client._s.post.assert_not_called()
+
+
+def test_set_fields_allows_recognized_registrar():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    current = SAMPLE_FORM.replace('value="10.0.0.1"', 'value="PBX.EXAMPLE:5060"')
+    updated = current.replace('value="3102"', 'value="118"')
+    client._request = Mock(side_effect=[current, updated])
+    client._s.post = Mock(return_value=Mock())
+
+    result = client.set_fields(
+        {"SIP_RegUser_R": "118"},
+        allowed_existing_registrars=("pbx.example",),
+    )
+
+    assert result.ext == "118"
 
 
 def test_set_fields_reraises_ambiguous_write_when_readback_does_not_match(monkeypatch):

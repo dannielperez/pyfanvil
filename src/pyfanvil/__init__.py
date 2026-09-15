@@ -15,6 +15,7 @@ from .webconfig import (
     DeviceInfo,
     FanvilWebConfig,
     LoginError,
+    OccupiedSipAccountError,
     SipAccount,
     is_fanvil_mac,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "SipAccount",
     "DeviceInfo",
     "LoginError",
+    "OccupiedSipAccountError",
     "BusyError",
     "FANVIL_OUIS",
     "is_fanvil_mac",

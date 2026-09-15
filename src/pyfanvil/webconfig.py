@@ -72,6 +72,10 @@ class BusyError(RuntimeError):
     """Device session pool exhausted (HTTP 503) after retries."""
 
 
+class OccupiedSipAccountError(RuntimeError):
+    """The selected line is populated by an unrecognized SIP registrar."""
+
+
 @dataclass
 class SipAccount:
     """Snapshot of one SIP line read from ``/lines.htm``."""
@@ -185,6 +189,16 @@ def _sip_account_from_html(html: str) -> SipAccount:
         phone_number=_field(html, "SIP_PhoneNum_R"),
         display_name=_field(html, "SIP_DisPlayName_R"),
     )
+
+
+def _normalized_registrar(value: object) -> str:
+    registrar = str(value or "").strip().casefold()
+    if "://" in registrar:
+        registrar = registrar.split("://", 1)[1]
+    registrar = registrar.split("/", 1)[0].rstrip(".")
+    if registrar.count(":") == 1:
+        registrar = registrar.split(":", 1)[0]
+    return registrar
 
 
 def _is_authenticated_page(html: str) -> bool:
@@ -447,14 +461,34 @@ class FanvilWebConfig:
                 return None
             time.sleep(min(self.write_verify_interval, remaining))
 
-    def set_fields(self, changes: dict[str, str], *, account: int = 1) -> SipAccount:
+    def set_fields(
+        self,
+        changes: dict[str, str],
+        *,
+        account: int = 1,
+        allowed_existing_registrars: tuple[str, ...] | None = None,
+    ) -> SipAccount:
         """Apply only ``changes`` to one verified SIP account and re-read it."""
         parser = _FormFields(_SIP_ANCHOR)
         parser.feed(self._select_sip_account_page(account))
         if not parser.fields:
             raise RuntimeError(f"{self.host}: SIP form not found on /lines.htm")
-        body = build_scoped_update_body(parser.fields, changes)
         before = {name: value for name, value, _ in parser.fields}
+        if allowed_existing_registrars is not None:
+            current_registrar = _normalized_registrar(before.get("SIP_RegAddr_R"))
+            current_identity = str(
+                before.get("SIP_RegUser_R") or before.get("SIP_PhoneNum_R") or ""
+            ).strip()
+            allowed = {
+                normalized
+                for value in allowed_existing_registrars
+                if (normalized := _normalized_registrar(value))
+            }
+            if (current_registrar or current_identity) and current_registrar not in allowed:
+                raise OccupiedSipAccountError(
+                    f"{self.host}: SIP account {account} uses an unrecognized registrar"
+                )
+        body = build_scoped_update_body(parser.fields, changes)
         password_fields = {name for name, _, typ in parser.fields if typ == "password"}
         return self._post_sip_fields(
             body=body,
@@ -537,6 +571,7 @@ class FanvilWebConfig:
         transport: str = "udp",
         extension: str | None = None,
         display_name: str | None = None,
+        allowed_existing_registrars: tuple[str, ...] | None = None,
     ) -> SipAccount:
         """Apply one SIP account using vendor-neutral values.
 
@@ -565,7 +600,12 @@ class FanvilWebConfig:
             changes["SIP_PhoneNum_R"] = extension
         if display_name is not None:
             changes["SIP_DisPlayName_R"] = display_name
-        return self.set_fields(changes, account=account)
+        guard = (
+            {"allowed_existing_registrars": allowed_existing_registrars}
+            if allowed_existing_registrars is not None
+            else {}
+        )
+        return self.set_fields(changes, account=account, **guard)
 
 
 def build_replay_body(

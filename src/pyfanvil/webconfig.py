@@ -16,11 +16,10 @@ This module drives that firmware headlessly:
   ``ReturnPage`` value so firmware variants receive the value they advertise.
 * **Read** – ``GET /lines.htm`` (server-side-filled form fields such as
   ``SIP_RegUser_R``, ``SIP_RegAddr_R``, ``SIP_BackupAddr_R``).
-* **Write** – a faithful *full-form replay*: re-POST every field of the ``sipForm``
-  with its current value, changing only the target(s), adding ``DefaultSubmit=Apply``
-  and base64-encoding password fields as ``"$EP^%39]" + base64(value)`` — byte-for-byte
-  what the browser sends on **Apply**, so the masked-password placeholder is treated
-  as "unchanged" and registration survives.
+* **Write** – a scoped form update: POST only explicitly requested SIP fields plus
+  the firmware's required commit metadata.  Never replay masked password placeholders
+  from the page; some X-series firmware treats them as new credentials and overwrites
+  another registration.
 * **Single session** – the firmware serves very few sessions and returns HTTP 503
   ("Server Too Busy") once the pool is exhausted, so every session **logs out** and
   ``_request`` backs off on 503. Use the context manager to guarantee logout.
@@ -52,6 +51,11 @@ FANVIL_OUIS = ("0c:38:3e", "00:a8:59")
 
 _SIP_ANCHOR = "SIP_RegAddr_R"  # a field unique to the SIP account form (``sipForm``)
 _SIP_TRANSPORTS = {"udp": "0", "tcp": "1"}
+_SIP_APPLY_STATE_FIELDS = {
+    "CheckBoxManager",
+    "keepList",
+    "SIP_PhoneLineEntry",
+}
 _AUTHENTICATED_PAGE_MARKERS = ("realws.htm", "currentstat.htm")
 PROVISIONING_REQUEST_TIMEOUT = 10.0
 PROVISIONING_TOTAL_TIMEOUT = 30.0
@@ -78,6 +82,8 @@ class SipAccount:
     backup: str | None
     backup_port: str | None
     failback: bool | None
+    phone_number: str | None = None
+    display_name: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -87,6 +93,8 @@ class SipAccount:
             "backup": self.backup,
             "backup_port": self.backup_port,
             "failback": self.failback,
+            "phone_number": self.phone_number,
+            "display_name": self.display_name,
         }
 
 
@@ -174,6 +182,8 @@ def _sip_account_from_html(html: str) -> SipAccount:
         backup=_field(html, "SIP_BackupAddr_R"),
         backup_port=_field(html, "SIP_BackupPort_R"),
         failback=_checked(html, "SIP_EnableFailback_RW"),
+        phone_number=_field(html, "SIP_PhoneNum_R"),
+        display_name=_field(html, "SIP_DisPlayName_R"),
     )
 
 
@@ -361,12 +371,47 @@ class FanvilWebConfig:
         )
 
     # -- SIP account -------------------------------------------------------
-    def read_sip(self) -> SipAccount:
-        return _sip_account_from_html(self._request("/lines.htm"))
+    @staticmethod
+    def _line_index(account: int) -> str:
+        if account not in {1, 2}:
+            raise ValueError("SIP account must be 1 or 2")
+        return str(account - 1)
+
+    def _select_sip_account_page(self, account: int) -> str:
+        """Return ``/lines.htm`` with ``account`` selected in this session.
+
+        X-series firmware stores the selected line in the authenticated web
+        session.  The line-selector form uses zero-based ``line`` values.  A
+        SIP mutation is allowed only after the returned selector proves the
+        requested line is active, preventing a stale session from writing the
+        wrong registration.
+        """
+        requested = self._line_index(account)
+        html = self._request("/lines.htm")
+        selector = _FormFields("line")
+        selector.feed(html)
+        selected = {name: value for name, value, _ in selector.fields}.get("line")
+        if selected == requested:
+            return html
+        if selected is None:
+            raise RuntimeError(f"{self.host}: SIP line selector not found on /lines.htm")
+        self._request("/lines.htm", {"line": requested})
+        html = self._request("/lines.htm")
+        selector = _FormFields("line")
+        selector.feed(html)
+        selected = {name: value for name, value, _ in selector.fields}.get("line")
+        if selected != requested:
+            raise RuntimeError(f"{self.host}: SIP account {account} could not be selected safely")
+        return html
+
+    def read_sip(self, *, account: int = 1) -> SipAccount:
+        return _sip_account_from_html(self._select_sip_account_page(account))
 
     def _verify_fields_after_ambiguous_write(
         self,
         expected: dict[str, str],
+        *,
+        account: int = 1,
     ) -> SipAccount | None:
         """Boundedly confirm an ambiguous SIP-form write without replaying it."""
         deadline = time.monotonic() + self.write_verify_timeout
@@ -382,6 +427,11 @@ class FanvilWebConfig:
                     timeout=min(self.timeout, remaining),
                 )
                 if response.status_code == 200:
+                    selector = _FormFields("line")
+                    selector.feed(response.text)
+                    selected = {name: value for name, value, _ in selector.fields}.get("line")
+                    if selected != self._line_index(account):
+                        return None
                     parser = _FormFields(_SIP_ANCHOR)
                     parser.feed(response.text)
                     actual = {name: value for name, value, _ in parser.fields}
@@ -397,15 +447,13 @@ class FanvilWebConfig:
                 return None
             time.sleep(min(self.write_verify_interval, remaining))
 
-    def set_fields(self, changes: dict[str, str]) -> SipAccount:
-        """Apply ``changes`` (field name -> value) to the SIP form via full-form
-        replay, then return the re-read account. Only the given fields change.
-        """
+    def set_fields(self, changes: dict[str, str], *, account: int = 1) -> SipAccount:
+        """Apply only ``changes`` to one verified SIP account and re-read it."""
         parser = _FormFields(_SIP_ANCHOR)
-        parser.feed(self._request("/lines.htm"))
+        parser.feed(self._select_sip_account_page(account))
         if not parser.fields:
             raise RuntimeError(f"{self.host}: SIP form not found on /lines.htm")
-        body = build_replay_body(parser.fields, changes)
+        body = build_scoped_update_body(parser.fields, changes)
         before = {name: value for name, value, _ in parser.fields}
         password_fields = {name for name, _, typ in parser.fields if typ == "password"}
         return self._post_sip_fields(
@@ -413,6 +461,7 @@ class FanvilWebConfig:
             changes=changes,
             before=before,
             password_fields=password_fields,
+            account=account,
         )
 
     def _post_sip_fields(
@@ -422,6 +471,7 @@ class FanvilWebConfig:
         changes: dict[str, str],
         before: dict[str, str],
         password_fields: set[str],
+        account: int,
     ) -> SipAccount:
         try:
             self._s.post(
@@ -441,14 +491,14 @@ class FanvilWebConfig:
                 name: value for name, value in observable.items() if before.get(name) != value
             }
             verified = (
-                self._verify_fields_after_ambiguous_write(observable)
+                self._verify_fields_after_ambiguous_write(observable, account=account)
                 if changed_observable
                 else None
             )
             if verified is None:
                 raise
             return verified
-        return self.read_sip()
+        return self.read_sip(account=account)
 
     def set_sip_server(
         self,
@@ -472,9 +522,9 @@ class FanvilWebConfig:
 
     @staticmethod
     def validate_sip_account(account: int) -> None:
-        """Validate that this firmware facade can address ``account`` safely."""
-        if account != 1:
-            raise ValueError("legacy Fanvil web configuration supports SIP account 1 only")
+        """Validate a supported physical line number."""
+        if account not in {1, 2}:
+            raise ValueError("SIP account must be 1 or 2")
 
     def set_sip_account(
         self,
@@ -485,16 +535,17 @@ class FanvilWebConfig:
         username: str,
         password: str,
         transport: str = "udp",
+        extension: str | None = None,
+        display_name: str | None = None,
     ) -> SipAccount:
         """Apply one SIP account using vendor-neutral values.
 
         Fanvil form field names and transport encodings stay inside this wrapper;
         callers never need to know the legacy firmware's wire representation.
 
-        The currently supported legacy ``/lines.htm`` form exposes account 1
-        without an account-qualified write target.  Refuse account 2 instead
-        of silently overwriting account 1; a firmware-verified selector must be
-        added before account 2 can be mutated through this facade.
+        ``username`` is the authentication user.  ``extension`` is the handset
+        line username/number and may differ from it.  ``display_name`` controls
+        the label shown for the line.  Omitted optional values are preserved.
         """
         self.validate_sip_account(account)
         normalized_transport = transport.lower()
@@ -503,15 +554,18 @@ class FanvilWebConfig:
         except KeyError as exc:
             raise ValueError(f"unsupported SIP transport: {transport}") from exc
 
-        return self.set_fields(
-            {
-                "SIP_RegAddr_R": server,
-                "SIP_RegPort_R": port,
-                "SIP_RegUser_R": username,
-                "SIP_RegPasswd_R": password,
-                "SIP_Transport_RW": transport_value,
-            }
-        )
+        changes = {
+            "SIP_RegAddr_R": server,
+            "SIP_RegPort_R": port,
+            "SIP_RegUser_R": username,
+            "SIP_RegPasswd_R": password,
+            "SIP_Transport_RW": transport_value,
+        }
+        if extension is not None:
+            changes["SIP_PhoneNum_R"] = extension
+        if display_name is not None:
+            changes["SIP_DisPlayName_R"] = display_name
+        return self.set_fields(changes, account=account)
 
 
 def build_replay_body(
@@ -531,6 +585,37 @@ def build_replay_body(
         body.append((name, value))
     if not any(n == "DefaultSubmit" for n, _ in body):
         body.append(("DefaultSubmit", "Apply"))
+    return body
+
+
+def build_scoped_update_body(
+    fields: list[tuple[str, str, str]],
+    changes: dict[str, str],
+) -> list[tuple[str, str]]:
+    """Build a minimal Fanvil SIP Apply body.
+
+    Only requested fields and known commit metadata are submitted.  In
+    particular, masked password values scraped from the page are never echoed
+    back.  Every requested key must exist in the selected line's form so a
+    firmware mismatch fails closed before any POST.
+    """
+    by_name = {name: (value, typ) for name, value, typ in fields}
+    missing = sorted(set(changes) - set(by_name))
+    if missing:
+        raise RuntimeError("selected SIP form is missing required fields: " + ", ".join(missing))
+
+    body: list[tuple[str, str]] = []
+    for name in _SIP_APPLY_STATE_FIELDS:
+        if name in by_name:
+            body.append((name, by_name[name][0]))
+    if "keepList" not in by_name:
+        body.append(("keepList", ""))
+    for name, value in changes.items():
+        typ = by_name[name][1]
+        if typ == "password" and value:
+            value = ENCODE_PREFIX + base64.b64encode(value.encode()).decode()
+        body.append((name, value))
+    body.append(("DefaultSubmit", "Apply"))
     return body
 
 

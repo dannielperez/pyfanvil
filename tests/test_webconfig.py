@@ -15,12 +15,17 @@ from pyfanvil.webconfig import (
     _field,
     _FormFields,
     build_replay_body,
+    build_scoped_update_body,
 )
 
 # A trimmed sample of the ``sipForm`` served by /lines.htm.
 SAMPLE_FORM = """
 <form name="sipLineForm" method="post"><input type="hidden" name="line" value="0"></form>
 <form name="sipForm" method="post">
+  <input type="hidden" name="SIP_PhoneLineEntry" value="0">
+  <input type="hidden" name="CheckBoxManager" value="SIP_EnableSipReg_RW">
+  <input type="text" name="SIP_PhoneNum_R" value="3102">
+  <input type="text" name="SIP_DisPlayName_R" value="Front desk">
   <input type="text" name="SIP_RegUser_R" value="3102">
   <input type="text" name="SIP_RegAddr_R" value="10.0.0.1">
   <input type="text" name="SIP_RegPort_R" value="5060">
@@ -104,6 +109,46 @@ def test_build_replay_body_appends_apply_when_missing():
     assert ("DefaultSubmit", "Apply") in body
 
 
+def test_build_scoped_update_body_never_replays_masked_password_or_other_fields():
+    parser = _FormFields("SIP_RegAddr_R")
+    parser.feed(SAMPLE_FORM)
+
+    body = dict(
+        build_scoped_update_body(
+            parser.fields,
+            {"SIP_DisPlayName_R": "120_Guardia 13"},
+        )
+    )
+
+    assert body["SIP_DisPlayName_R"] == "120_Guardia 13"
+    assert body["SIP_PhoneLineEntry"] == "0"
+    assert body["DefaultSubmit"] == "Apply"
+    assert "SIP_RegPasswd_R" not in body
+    assert "SIP_RegAddr_R" not in body
+
+
+def test_build_scoped_update_body_encodes_only_requested_password():
+    parser = _FormFields("SIP_RegAddr_R")
+    parser.feed(SAMPLE_FORM)
+
+    body = dict(
+        build_scoped_update_body(
+            parser.fields,
+            {"SIP_RegPasswd_R": "new-secret"},
+        )
+    )
+
+    assert body["SIP_RegPasswd_R"] == ENCODE_PREFIX + base64.b64encode(b"new-secret").decode()
+
+
+def test_build_scoped_update_body_fails_closed_for_unknown_field():
+    parser = _FormFields("SIP_RegAddr_R")
+    parser.feed(SAMPLE_FORM)
+
+    with pytest.raises(RuntimeError, match="SIP_Unknown_R"):
+        build_scoped_update_body(parser.fields, {"SIP_Unknown_R": "value"})
+
+
 def test_set_sip_account_maps_neutral_values_to_firmware_fields():
     client = FanvilWebConfig("phone.example", "admin", "secret")
     client.set_fields = Mock()
@@ -114,6 +159,8 @@ def test_set_sip_account_maps_neutral_values_to_firmware_fields():
         username="1001",
         password="sip-secret",
         transport="TCP",
+        extension="120",
+        display_name="120_Guardia 13",
     )
 
     client.set_fields.assert_called_once_with(
@@ -123,7 +170,10 @@ def test_set_sip_account_maps_neutral_values_to_firmware_fields():
             "SIP_RegUser_R": "1001",
             "SIP_RegPasswd_R": "sip-secret",
             "SIP_Transport_RW": "1",
-        }
+            "SIP_PhoneNum_R": "120",
+            "SIP_DisPlayName_R": "120_Guardia 13",
+        },
+        account=1,
     )
 
 
@@ -230,19 +280,50 @@ def test_set_fields_does_not_infer_password_change_from_unchanged_visible_fields
     client._s.get.assert_not_called()
 
 
-def test_set_sip_account_refuses_unverified_second_account():
+def test_set_sip_account_selects_and_verifies_second_account_before_write():
     client = FanvilWebConfig("phone.example", "admin", "secret")
     client.set_fields = Mock()
 
-    with pytest.raises(ValueError, match="account 1 only"):
-        client.set_sip_account(
-            account=2,
-            server="pbx.example",
-            username="1002",
-            password="sip-secret",
-        )
+    client.set_sip_account(
+        account=2,
+        server="pbx.example",
+        username="1002",
+        password="sip-secret",
+    )
 
-    client.set_fields.assert_not_called()
+    client.set_fields.assert_called_once_with(
+        {
+            "SIP_RegAddr_R": "pbx.example",
+            "SIP_RegPort_R": "5060",
+            "SIP_RegUser_R": "1002",
+            "SIP_RegPasswd_R": "sip-secret",
+            "SIP_Transport_RW": "0",
+        },
+        account=2,
+    )
+
+
+def test_select_sip_account_posts_zero_based_line_then_confirms():
+    line_two = SAMPLE_FORM.replace('name="line" value="0"', 'name="line" value="1"')
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(side_effect=[SAMPLE_FORM, "ok", line_two])
+
+    account = client.read_sip(account=2)
+
+    assert account.ext == "3102"
+    assert client._request.call_args_list == [
+        (("/lines.htm",),),
+        (("/lines.htm", {"line": "1"}),),
+        (("/lines.htm",),),
+    ]
+
+
+def test_select_sip_account_fails_closed_when_firmware_keeps_wrong_line():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(side_effect=[SAMPLE_FORM, "ok", SAMPLE_FORM])
+
+    with pytest.raises(RuntimeError, match="could not be selected safely"):
+        client.read_sip(account=2)
 
 
 def test_set_sip_account_rejects_unsupported_transport():

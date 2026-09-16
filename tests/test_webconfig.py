@@ -19,8 +19,11 @@ from pyfanvil.webconfig import (
 )
 
 # A trimmed sample of the ``sipForm`` served by /lines.htm.
-SAMPLE_FORM = """
-<form name="sipLineForm" method="post"><input type="hidden" name="line" value="0"></form>
+LINE_SELECTOR_FORM = (
+    '<form name="sipLineForm" method="post"><input type="hidden" name="line" value="0"></form>'
+)
+SAMPLE_FORM = f"""
+{LINE_SELECTOR_FORM}
 <form name="sipForm" method="post">
   <input type="hidden" name="SIP_PhoneLineEntry" value="0">
   <input type="hidden" name="CheckBoxManager" value="SIP_EnableSipReg_RW">
@@ -345,6 +348,36 @@ def test_select_sip_account_posts_zero_based_line_then_confirms():
         (("/lines.htm", {"line": "1"}),),
         (("/lines.htm",),),
     ]
+
+
+def test_select_sip_account_supports_legacy_phone_line_entry_selector():
+    legacy_line_one = SAMPLE_FORM.replace(LINE_SELECTOR_FORM, "")
+    legacy_line_two = legacy_line_one.replace(
+        'name="SIP_PhoneLineEntry" value="0"',
+        'name="SIP_PhoneLineEntry" value="1"',
+    )
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(side_effect=[legacy_line_one, "ok", legacy_line_two])
+
+    account = client.read_sip(account=2)
+
+    assert account.ext == "3102"
+    assert client._request.call_args_list == [
+        (("/lines.htm",),),
+        (("/lines.htm", {"SIP_PhoneLineEntry": "1"}),),
+        (("/lines.htm",),),
+    ]
+
+
+def test_read_sip_accepts_already_selected_legacy_phone_line_entry():
+    legacy_line_one = SAMPLE_FORM.replace(LINE_SELECTOR_FORM, "")
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(return_value=legacy_line_one)
+
+    account = client.read_sip(account=1)
+
+    assert account.ext == "3102"
+    client._request.assert_called_once_with("/lines.htm")
 
 
 def test_select_sip_account_fails_closed_when_firmware_keeps_wrong_line():

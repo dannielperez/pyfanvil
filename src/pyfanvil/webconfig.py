@@ -50,6 +50,7 @@ ENCODE_PREFIX = "$EP^%39]"
 FANVIL_OUIS = ("0c:38:3e", "00:a8:59")
 
 _SIP_ANCHOR = "SIP_RegAddr_R"  # a field unique to the SIP account form (``sipForm``)
+_SIP_LINE_SELECTORS = ("line", "SIP_PhoneLineEntry")
 _SIP_TRANSPORTS = {"udp": "0", "tcp": "1"}
 _SIP_APPLY_STATE_FIELDS = {
     "CheckBoxManager",
@@ -176,6 +177,13 @@ def _field(html: str, name: str) -> str | None:
 def _checked(html: str, name: str) -> bool:
     m = re.search(rf'name="{re.escape(name)}"[^>]*>', html)
     return bool(m and re.search(r"\bchecked\b", m.group(0), re.I))
+
+
+def _sip_line_selector(html: str) -> tuple[str, str] | None:
+    for name in _SIP_LINE_SELECTORS:
+        if (value := _field(html, name)) is not None:
+            return name, value
+    return None
 
 
 def _sip_account_from_html(html: str) -> SipAccount:
@@ -395,25 +403,25 @@ class FanvilWebConfig:
         """Return ``/lines.htm`` with ``account`` selected in this session.
 
         X-series firmware stores the selected line in the authenticated web
-        session.  The line-selector form uses zero-based ``line`` values.  A
-        SIP mutation is allowed only after the returned selector proves the
+        session. Firmware families expose either ``line`` or the legacy
+        ``SIP_PhoneLineEntry`` field, both with zero-based values. A SIP
+        mutation is allowed only after the returned selector proves the
         requested line is active, preventing a stale session from writing the
         wrong registration.
         """
         requested = self._line_index(account)
         html = self._request("/lines.htm")
-        selector = _FormFields("line")
-        selector.feed(html)
-        selected = {name: value for name, value, _ in selector.fields}.get("line")
+        selector = _sip_line_selector(html)
+        selected = selector[1] if selector is not None else None
         if selected == requested:
             return html
-        if selected is None:
+        if selector is None:
             raise RuntimeError(f"{self.host}: SIP line selector not found on /lines.htm")
-        self._request("/lines.htm", {"line": requested})
+        selector_name, _ = selector
+        self._request("/lines.htm", {selector_name: requested})
         html = self._request("/lines.htm")
-        selector = _FormFields("line")
-        selector.feed(html)
-        selected = {name: value for name, value, _ in selector.fields}.get("line")
+        confirmed = _sip_line_selector(html)
+        selected = confirmed[1] if confirmed is not None else None
         if selected != requested:
             raise RuntimeError(f"{self.host}: SIP account {account} could not be selected safely")
         return html
@@ -441,9 +449,8 @@ class FanvilWebConfig:
                     timeout=min(self.timeout, remaining),
                 )
                 if response.status_code == 200:
-                    selector = _FormFields("line")
-                    selector.feed(response.text)
-                    selected = {name: value for name, value, _ in selector.fields}.get("line")
+                    selector = _sip_line_selector(response.text)
+                    selected = selector[1] if selector is not None else None
                     if selected != self._line_index(account):
                         return None
                     parser = _FormFields(_SIP_ANCHOR)

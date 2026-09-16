@@ -271,6 +271,24 @@ def test_set_fields_allows_expected_identity():
     assert result.ext == "118"
 
 
+def test_set_fields_allows_an_explicit_prior_identity():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    current = SAMPLE_FORM.replace('value="10.0.0.1"', 'value="PBX.EXAMPLE:5060"').replace(
+        'value="3102"', 'value="117"'
+    )
+    updated = current.replace('value="117"', 'value="118"')
+    client._request = Mock(side_effect=[current, updated])
+    client._s.post = Mock(return_value=Mock())
+
+    result = client.set_fields(
+        {"SIP_RegUser_R": "118"},
+        allowed_existing_registrars=("pbx.example",),
+        allowed_existing_identities=("118", "117"),
+    )
+
+    assert result.ext == "118"
+
+
 def test_set_fields_reraises_ambiguous_write_when_readback_does_not_match(monkeypatch):
     client = FanvilWebConfig(
         "phone.example",

@@ -238,6 +238,57 @@ def test_set_fields_allows_recognized_registrar():
     assert result.ext == "118"
 
 
+def test_set_fields_refuses_unexpected_identity_before_write():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    current = SAMPLE_FORM.replace('value="10.0.0.1"', 'value="PBX.EXAMPLE:5060"')
+    client._request = Mock(return_value=current)
+    client._s.post = Mock()
+
+    with pytest.raises(OccupiedSipAccountError, match="unexpected identity"):
+        client.set_fields(
+            {"SIP_RegUser_R": "118"},
+            allowed_existing_registrars=("pbx.example",),
+            allowed_existing_identities=("118",),
+        )
+
+    client._s.post.assert_not_called()
+
+
+def test_set_fields_allows_expected_identity():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    current = SAMPLE_FORM.replace('value="10.0.0.1"', 'value="PBX.EXAMPLE:5060"').replace(
+        'value="3102"', 'value="118"'
+    )
+    client._request = Mock(side_effect=[current, current])
+    client._s.post = Mock(return_value=Mock())
+
+    result = client.set_fields(
+        {"SIP_RegUser_R": "118"},
+        allowed_existing_registrars=("pbx.example",),
+        allowed_existing_identities=("118",),
+    )
+
+    assert result.ext == "118"
+
+
+def test_set_fields_allows_an_explicit_prior_identity():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    current = SAMPLE_FORM.replace('value="10.0.0.1"', 'value="PBX.EXAMPLE:5060"').replace(
+        'value="3102"', 'value="117"'
+    )
+    updated = current.replace('value="117"', 'value="118"')
+    client._request = Mock(side_effect=[current, updated])
+    client._s.post = Mock(return_value=Mock())
+
+    result = client.set_fields(
+        {"SIP_RegUser_R": "118"},
+        allowed_existing_registrars=("pbx.example",),
+        allowed_existing_identities=("118", "117"),
+    )
+
+    assert result.ext == "118"
+
+
 def test_set_fields_reraises_ambiguous_write_when_readback_does_not_match(monkeypatch):
     client = FanvilWebConfig(
         "phone.example",

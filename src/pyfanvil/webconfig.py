@@ -474,6 +474,7 @@ class FanvilWebConfig:
         *,
         account: int = 1,
         allowed_existing_registrars: tuple[str, ...] | None = None,
+        allowed_existing_identities: tuple[str, ...] | None = None,
     ) -> SipAccount:
         """Apply only ``changes`` to one verified SIP account and re-read it."""
         parser = _FormFields(_SIP_ANCHOR)
@@ -494,6 +495,20 @@ class FanvilWebConfig:
             if (current_registrar or current_identity) and current_registrar not in allowed:
                 raise OccupiedSipAccountError(
                     f"{self.host}: SIP account {account} uses an unrecognized registrar"
+                )
+        if allowed_existing_identities is not None:
+            current_identity = str(
+                before.get("SIP_RegUser_R") or before.get("SIP_PhoneNum_R") or ""
+            ).strip()
+            allowed_identities = {
+                str(value).strip() for value in allowed_existing_identities if str(value).strip()
+            }
+            current_registrar = _normalized_registrar(before.get("SIP_RegAddr_R"))
+            if (
+                current_registrar or current_identity
+            ) and current_identity not in allowed_identities:
+                raise OccupiedSipAccountError(
+                    f"{self.host}: SIP account {account} uses an unexpected identity"
                 )
         body = build_scoped_update_body(parser.fields, changes)
         password_fields = {name for name, _, typ in parser.fields if typ == "password"}
@@ -579,6 +594,7 @@ class FanvilWebConfig:
         extension: str | None = None,
         display_name: str | None = None,
         allowed_existing_registrars: tuple[str, ...] | None = None,
+        allowed_existing_identities: tuple[str, ...] | None = None,
     ) -> SipAccount:
         """Apply one SIP account using vendor-neutral values.
 
@@ -607,11 +623,11 @@ class FanvilWebConfig:
             changes["SIP_PhoneNum_R"] = extension
         if display_name is not None:
             changes["SIP_DisPlayName_R"] = display_name
-        guard = (
-            {"allowed_existing_registrars": allowed_existing_registrars}
-            if allowed_existing_registrars is not None
-            else {}
-        )
+        guard = {}
+        if allowed_existing_registrars is not None:
+            guard["allowed_existing_registrars"] = allowed_existing_registrars
+        if allowed_existing_identities is not None:
+            guard["allowed_existing_identities"] = allowed_existing_identities
         return self.set_fields(changes, account=account, **guard)
 
 

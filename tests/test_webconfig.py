@@ -643,3 +643,84 @@ def test_login_rejects_form_nonce_when_authenticated_marker_never_appears():
         client.login()
 
     assert client._logged_in is False
+
+
+# Sanitized X3S/X3SP 2.14.0.7386 structure captured during the ext-106 incident.
+def _x3s_form(account=2):
+    selector = """<form><input name="SIP_PhoneLineTabIndex_R" value="">
+    <input type="submit" name="DefaultLoad"><input name="ReturnPage" value="/lines.htm">
+    <select name="SIP_PhoneLineEntry">"""
+    selector += "".join(
+        f'<option value="{i}" {"SELECTED" if i == account else ""}>{i}</option>'
+        for i in range(1, 5)
+    )
+    selector += "</select></form>"
+    return (
+        SAMPLE_FORM.replace(LINE_SELECTOR_FORM, selector)
+        .replace(
+            'name="SIP_PhoneLineEntry" value="0"',
+            'name="SIP_PhoneLineEntry" id="SIP_PhoneLineEntry"',
+        )
+        .replace("SIP_BackupAddr_R", "SIP_RegAddr1_R")
+    )
+
+
+def test_x3s_one_based_selected_account_and_backup_are_read_without_post():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(return_value=_x3s_form(2))
+    result = client.read_sip(account=2)
+    assert result.ext == "3102"
+    assert result.backup == "9.9.9.9"
+    client._request.assert_called_once_with("/lines.htm")
+
+
+def test_x3s_switches_with_browser_load_fields_and_confirms_selected_account():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(side_effect=[_x3s_form(2), "ok", _x3s_form(1)])
+    client.read_sip(account=1)
+    assert client._request.call_args_list[1].args == (
+        "/lines.htm",
+        {
+            "SIP_PhoneLineEntry": "1",
+            "SIP_PhoneLineTabIndex_R": "",
+            "DefaultLoad": "",
+            "ReturnPage": "/lines.htm",
+        },
+    )
+
+
+def test_x3s_apply_fills_hidden_one_based_account_without_replaying_password():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(return_value=_x3s_form(2))
+    client._post_sip_fields = Mock()
+    client.set_fields({"SIP_RegAddr_R": "pbx.example"}, account=2)
+    body = dict(client._post_sip_fields.call_args.kwargs["body"])
+    assert body["SIP_PhoneLineEntry"] == "2"
+    assert body["SIP_RegAddr_R"] == "pbx.example"
+    assert "SIP_RegPasswd_R" not in body
+
+
+def test_x3s_cannot_apply_when_selection_did_not_change():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(return_value=_x3s_form(2))
+    client._post_sip_fields = Mock()
+    with pytest.raises(RuntimeError, match="could not be selected safely"):
+        client.set_fields({"SIP_RegAddr_R": "pbx.example"}, account=1)
+    client._post_sip_fields.assert_not_called()
+
+
+def test_x3s_timeout_readback_rejects_other_line_even_when_values_match():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._s.get = Mock(return_value=Mock(status_code=200, text=_x3s_form(1)))
+    assert (
+        client._verify_fields_after_ambiguous_write({"SIP_RegAddr_R": "10.0.0.1"}, account=2)
+        is None
+    )
+
+
+@pytest.mark.parametrize("bad_options", ['value="0"', 'value="unknown"'])
+def test_x3s_unrecognized_selector_does_not_fall_back_to_hidden_field(bad_options):
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(return_value=_x3s_form(2).replace('value="4"', bad_options))
+    with pytest.raises(RuntimeError, match="selector not found"):
+        client.read_sip(account=2)

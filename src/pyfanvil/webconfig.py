@@ -89,6 +89,7 @@ class SipAccount:
     failback: bool | None
     phone_number: str | None = None
     display_name: str | None = None
+    transport: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -100,6 +101,7 @@ class SipAccount:
             "failback": self.failback,
             "phone_number": self.phone_number,
             "display_name": self.display_name,
+            "transport": self.transport,
         }
 
 
@@ -179,7 +181,50 @@ def _checked(html: str, name: str) -> bool:
     return bool(m and re.search(r"\bchecked\b", m.group(0), re.I))
 
 
+class _LegacyLineSelect(HTMLParser):
+    """X3S 2.14 uses a one-based select plus an empty Apply hidden field.
+
+    Do not interpret that hidden field as the selected account. Only recognize
+    the captured one-based option set; other dialects retain the existing
+    zero-based hidden-field contract.
+    """
+
+    def __init__(self, html: str) -> None:
+        super().__init__()
+        self.in_select = False
+        self.options: list[str] = []
+        self.selected: list[str] = []
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):  # noqa: ANN001
+        attrs = dict(attrs)
+        if tag == "select":
+            self.in_select = attrs.get("name") == "SIP_PhoneLineEntry"
+        elif tag == "option" and self.in_select:
+            value = attrs.get("value", "")
+            self.options.append(value)
+            if "selected" in attrs:
+                self.selected.append(value)
+
+    def handle_endtag(self, tag):  # noqa: ANN001
+        if tag == "select":
+            self.in_select = False
+
+    @property
+    def value(self) -> str | None:
+        if self.options not in (["1", "2"], ["1", "2", "3", "4"]):
+            return None
+        if len(self.selected) > 1:
+            return None
+        return self.selected[0] if self.selected else self.options[0]
+
+
 def _sip_line_selector(html: str) -> tuple[str, str] | None:
+    legacy = _LegacyLineSelect(html)
+    if legacy.options:
+        if legacy.value is None:
+            return None
+        return "SIP_PhoneLineEntry", str(int(legacy.value) - 1)
     for name in _SIP_LINE_SELECTORS:
         if (value := _field(html, name)) is not None:
             return name, value
@@ -187,15 +232,19 @@ def _sip_line_selector(html: str) -> tuple[str, str] | None:
 
 
 def _sip_account_from_html(html: str) -> SipAccount:
+    parser = _FormFields(_SIP_ANCHOR)
+    parser.feed(html)
+    fields = {name: value for name, value, _ in parser.fields}
     return SipAccount(
         ext=_field(html, "SIP_RegUser_R"),
         primary=_field(html, "SIP_RegAddr_R"),
         primary_port=_field(html, "SIP_RegPort_R"),
-        backup=_field(html, "SIP_BackupAddr_R"),
-        backup_port=_field(html, "SIP_BackupPort_R"),
+        backup=_field(html, "SIP_BackupAddr_R") or _field(html, "SIP_RegAddr1_R"),
+        backup_port=_field(html, "SIP_BackupPort_R") or _field(html, "SIP_RegPort1_R"),
         failback=_checked(html, "SIP_EnableFailback_RW"),
         phone_number=_field(html, "SIP_PhoneNum_R"),
         display_name=_field(html, "SIP_DisPlayName_R"),
+        transport={"0": "udp", "1": "tcp"}.get(fields.get("SIP_Transport_RW")),
     )
 
 
@@ -418,7 +467,16 @@ class FanvilWebConfig:
         if selector is None:
             raise RuntimeError(f"{self.host}: SIP line selector not found on /lines.htm")
         selector_name, _ = selector
-        self._request("/lines.htm", {selector_name: requested})
+        if _LegacyLineSelect(html).value is not None:
+            selection = {
+                selector_name: str(account),
+                "SIP_PhoneLineTabIndex_R": "",
+                "DefaultLoad": "",
+                "ReturnPage": "/lines.htm",
+            }
+        else:
+            selection = {selector_name: requested}
+        self._request("/lines.htm", selection)
         html = self._request("/lines.htm")
         confirmed = _sip_line_selector(html)
         selected = confirmed[1] if confirmed is not None else None
@@ -478,7 +536,15 @@ class FanvilWebConfig:
     ) -> SipAccount:
         """Apply only ``changes`` to one verified SIP account and re-read it."""
         parser = _FormFields(_SIP_ANCHOR)
-        parser.feed(self._select_sip_account_page(account))
+        html = self._select_sip_account_page(account)
+        parser.feed(html)
+        if _LegacyLineSelect(html).value is not None:
+            # The browser fills this otherwise-empty hidden Apply field from
+            # the one-based dropdown immediately before submitting sipForm.
+            parser.fields = [
+                (name, str(account) if name == "SIP_PhoneLineEntry" else value, typ)
+                for name, value, typ in parser.fields
+            ]
         if not parser.fields:
             raise RuntimeError(f"{self.host}: SIP form not found on /lines.htm")
         before = {name: value for name, value, _ in parser.fields}

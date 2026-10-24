@@ -37,6 +37,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
+from html import unescape
 from html.parser import HTMLParser
 
 import requests
@@ -111,6 +112,9 @@ class DeviceInfo:
 
     mac: str | None
     model: str | None
+    hardware_version: str | None = None
+    firmware_version: str | None = None
+    uptime: str | None = None
 
     @property
     def is_fanvil(self) -> bool:
@@ -424,7 +428,17 @@ class FanvilWebConfig:
     # -- identity ----------------------------------------------------------
     def identify(self) -> DeviceInfo:
         html = self._request("/information.htm")
-        macs = re.findall(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", html)
+        # Only exact information-table labels qualify; "Last Uptime" is not uptime.
+        fields = {}
+        for row in re.findall(r"<tr\b[^>]*>(.*?)</tr>", html, re.I | re.S):
+            cells = re.findall(r"<td\b[^>]*>(.*?)</td>", row, re.I | re.S)
+            if len(cells) == 2:
+                values = [unescape(re.sub(r"<[^>]*>", "", cell)).strip() for cell in cells]
+                fields[values[0].rstrip(":").strip().lower()] = values[1] or None
+        mac_source = fields.get("ethernet mac")
+        # When Ethernet is explicitly unavailable, do not substitute another interface.
+        identity_html = mac_source or "" if "ethernet mac" in fields else html
+        macs = re.findall(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", identity_html)
         labeled_model = re.search(
             r'id=["\']XSTR_LBL_INFO_MODEL["\'][^>]*>.*?</span>\s*:?\s*</td>'
             r"\s*<td[^>]*>\s*([^<]+)",
@@ -433,6 +447,10 @@ class FanvilWebConfig:
         )
         fallback_model = re.search(r"(?i)\b(i[0-9]{2}[A-Za-z]?|[A-Z][0-9]{2,3}[A-Za-z]?)\b", html)
         return DeviceInfo(
+            hardware_version=fields.get("hardware"),
+            firmware_version=fields.get("software"),
+            # Preserve the device string: firmware-specific units are not inferred.
+            uptime=fields.get("uptime"),
             mac=(macs[0].lower() if macs else None),
             model=(
                 _unescape(labeled_model.group(1).strip())

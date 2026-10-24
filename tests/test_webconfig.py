@@ -724,3 +724,39 @@ def test_x3s_unrecognized_selector_does_not_fall_back_to_hidden_field(bad_option
     client._request = Mock(return_value=_x3s_form(2).replace('value="4"', bad_options))
     with pytest.raises(RuntimeError, match="selector not found"):
         client.read_sip(account=2)
+
+
+def test_native_information_uses_ethernet_and_current_uptime():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(
+        return_value="""
+        <tr><td>Wi-Fi MAC:</td><td>00:a8:59:00:00:02</td></tr>
+        <tr><td><span id="XSTR_LBL_INFO_MODEL">Model</span>:</td><td>i16S</td></tr>
+        <tr><td>Hardware:</td><td>V1.0</td></tr>
+        <tr><td>Software:</td><td>2.12.50.14</td></tr>
+        <tr><td>Last Uptime:</td><td>1291 : 34 : 26</td></tr>
+        <tr><td>Uptime:</td><td>33 : 34 : 40</td></tr>
+        <tr><td>Ethernet MAC:</td><td>0C:38:3E:00:00:01(Invalid)</td></tr>
+    """
+    )
+    info = client.identify()
+    assert info.mac == "0c:38:3e:00:00:01"
+    assert info.hardware_version == "V1.0"
+    assert info.firmware_version == "2.12.50.14"
+    assert info.uptime == "33 : 34 : 40"
+    client._request.assert_called_once_with("/information.htm")
+
+
+def test_unavailable_ethernet_does_not_use_wifi_or_previous_uptime():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._request = Mock(
+        return_value="""
+        <tr><td>Wi-Fi MAC:</td><td>00:a8:59:00:00:02</td></tr>
+        <tr><td>Ethernet MAC:</td><td>N/A(Invalid)</td></tr>
+        <tr><td>Last Uptime:</td><td>100 : 00 : 00</td></tr>
+    """
+    )
+    info = client.identify()
+    assert info.mac is None
+    assert info.uptime is None
+    assert info.firmware_version is None

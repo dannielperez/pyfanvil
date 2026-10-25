@@ -91,6 +91,8 @@ class SipAccount:
     phone_number: str | None = None
     display_name: str | None = None
     transport: str | None = None
+    enabled: bool | None = None
+    registered: bool | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -103,6 +105,8 @@ class SipAccount:
             "phone_number": self.phone_number,
             "display_name": self.display_name,
             "transport": self.transport,
+            "enabled": self.enabled,
+            "registered": self.registered,
         }
 
 
@@ -132,16 +136,21 @@ class _FormFields(HTMLParser):
         self._cur: list[tuple[str, str, str]] | None = None
         self._sel: str | None = None
         self._picked = False
+        self.checkboxes: dict[str, bool] = {}
+        self._checkboxes: dict[str, bool] = {}
 
     def handle_starttag(self, tag: str, attrs):  # noqa: ANN001
         a = {k: (v or "") for k, v in attrs}
         if tag == "form":
             self._cur = []
+            self._checkboxes = {}
         elif tag == "input" and self._cur is not None:
             name = a.get("name")
             if not name:
                 return
             typ = (a.get("type") or "text").lower()
+            if typ == "checkbox":
+                self._checkboxes[name] = "checked" in a
             if typ in ("checkbox", "radio"):
                 if "checked" in a:
                     self._cur.append((name, a.get("value", "on"), typ))
@@ -166,6 +175,7 @@ class _FormFields(HTMLParser):
         elif tag == "form" and self._cur is not None:
             if any(n == self._anchor for n, *_ in self._cur):
                 self.fields = self._cur
+                self.checkboxes = self._checkboxes
             self._cur = None
 
 
@@ -249,6 +259,7 @@ def _sip_account_from_html(html: str) -> SipAccount:
         phone_number=_field(html, "SIP_PhoneNum_R"),
         display_name=_field(html, "SIP_DisPlayName_R"),
         transport={"0": "udp", "1": "tcp"}.get(fields.get("SIP_Transport_RW")),
+        enabled=parser.checkboxes.get("SIP_EnableSipReg_RW"),
     )
 
 
@@ -504,6 +515,24 @@ class FanvilWebConfig:
 
     def read_sip(self, *, account: int = 1) -> SipAccount:
         return _sip_account_from_html(self._select_sip_account_page(account))
+
+    def export_system_log(self, *, expected_mac, max_bytes=1024 * 1024):
+        from .diagnostics import export_system_log
+
+        return export_system_log(self, expected_mac=expected_mac, max_bytes=max_bytes)
+
+    def read_sip_status(self, *, account: int = 1) -> SipAccount:
+        """Read a proven selected slot and its native registration indicator.
+
+        This is registration evidence, never evidence that a call is idle.
+        Unknown/non-numeric responses remain unknown rather than becoming false.
+        The existing session deadline bounds both requests.
+        """
+        sip = _sip_account_from_html(self._select_sip_account_page(account))
+        state = self._request("/SIP_RegState_R.magicMark").strip()
+        if re.fullmatch(r"-?\d{1,8}", state):
+            sip.registered = int(state) == 200
+        return sip
 
     def _verify_fields_after_ambiguous_write(
         self,

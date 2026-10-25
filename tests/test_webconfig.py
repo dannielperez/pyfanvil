@@ -760,3 +760,38 @@ def test_unavailable_ethernet_does_not_use_wifi_or_previous_uptime():
     assert info.mac is None
     assert info.uptime is None
     assert info.firmware_version is None
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [
+        ("200", True),
+        ("1", False),
+        ("100", False),
+        ("403", False),
+        ("-60", False),
+        ("0", False),
+        ("<html>login</html>", None),
+    ],
+)
+def test_read_sip_status_keeps_registration_separate_from_calls(state, expected):
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._select_sip_account_page = Mock(
+        return_value=SAMPLE_FORM.replace(
+            '<input type="checkbox" name="SIP_Disabled_RW" value="ON">',
+            '<input type="checkbox" name="SIP_EnableSipReg_RW" CHECKED>',
+        )
+    )
+    client._request = Mock(return_value=state)
+    sip = client.read_sip_status(account=2)
+    assert sip.enabled is True
+    assert sip.registered is expected
+    client._select_sip_account_page.assert_called_once_with(2)
+    client._request.assert_called_once_with("/SIP_RegState_R.magicMark")
+
+
+def test_missing_registration_checkbox_is_unknown():
+    client = FanvilWebConfig("phone.example", "admin", "secret")
+    client._select_sip_account_page = Mock(return_value=SAMPLE_FORM)
+    client._request = Mock(return_value="1")
+    assert client.read_sip_status().enabled is None
